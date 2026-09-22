@@ -1,0 +1,15 @@
+{
+  "name": "canvas-portal",
+  "productName": "Canvas Portal",
+  "version": "0.1.0",
+  "description": "Ask Claude about your Canvas assignments, and hand in files when you say so.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "license": "MIT",
+  "author": "Saif Syed"
+}
