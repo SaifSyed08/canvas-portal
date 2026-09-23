@@ -1,0 +1,20 @@
+# Canvas Portal
+
+A desktop app where you can ask Claude about your Canvas classes: what's due, what an assignment actually wants, how the rubric grades it, what you missed. Attach a file and tell it to hand it in, and it sets up the submission for you to confirm with one click.
+
+## How it works
+
+- **Canvas.** You sign in once in a normal sign-in window. The portal reads Canvas with that session, the same way the Canvas website does, so it works at schools that turn off API tokens. If you let it save your email and password, it signs back in on its own whenever the session expires (they're encrypted with Windows DPAPI and only readable by your Windows account). If your school uses Duo or another second-factor check, the window pops up for you to approve.
+- **Claude.** Each message runs through Claude Code (`claude -p`) with your existing login, so there's no API key. The app hosts a small MCP server on localhost that gives Claude read access to your courses, assignments, rubrics, modules, pages, files, syllabi and announcements.
+- **Handing in.** Claude can only *propose* a submission. A card shows the assignment, due date, files, and any resubmission or late warnings, and nothing reaches Canvas until you click **Submit to Canvas**.
+
+## Running it
+
+Needs [Claude Code](https://claude.com/claude-code) installed and signed in.
+
+```
+npm install
+npm start
+```
+
+Your settings, the Canvas session, and attached files live in `%APPDATA%\Canvas Portal`.
