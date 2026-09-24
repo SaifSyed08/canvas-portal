@@ -1,15 +1,15 @@
 /* A tiny MCP server over HTTP, living inside the app.
 
-   Claude Code connects to it for each turn and gets the Canvas tools. It sits
-   on 127.0.0.1 behind a random path, so only the claude process we start
-   (which is handed the address) can find it. Replies are plain JSON — the
+   Claude Code connects to it and gets the Canvas tools: the portal's own chat
+   on every turn, and Claude Code in a terminal once it has been told the
+   address. It sits on 127.0.0.1 behind a random path kept in the portal's
+   config, so only something handed that address can find it. Replies are plain JSON — the
    streamable HTTP transport allows that when there is nothing to stream. */
 
 const http = require('http');
 const crypto = require('crypto');
 
-function startMcp(tools) {
-  const token = crypto.randomBytes(18).toString('hex');
+function startMcp(tools, { token = crypto.randomBytes(18).toString('hex'), ports = [0] } = {}) {
   const byName = new Map(tools.map(t => [t.name, t]));
 
   async function handle(m) {
@@ -61,12 +61,19 @@ function startMcp(tools) {
     });
   });
 
-  return new Promise((resolve, reject) => {
+  /* The first free port of the list wins; 0 means "any". */
+  const listen = port => new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      resolve({ url: `http://127.0.0.1:${server.address().port}/mcp/${token}`, close: () => server.close() });
-    });
+    server.listen(port, '127.0.0.1', () => { server.removeListener('error', reject); resolve(); });
   });
+  return (async () => {
+    let lastErr;
+    for (const port of [...ports, 0]) {
+      try { await listen(port); lastErr = null; break; } catch (e) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    return { url: `http://127.0.0.1:${server.address().port}/mcp/${token}`, close: () => server.close() };
+  })();
 }
 
 module.exports = { startMcp };

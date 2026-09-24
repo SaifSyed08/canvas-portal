@@ -422,7 +422,12 @@ function fillAi(item) {
   let any = false;
   const parts = item.parts || [];
   parts.forEach((p, i) => {
-    if (p.kind === 'text' && p.text.trim()) { el.append(h('div', { class: 'md', html: renderMarkdown(p.text) })); any = true; }
+    if (p.kind === 'text' && p.text.trim()) {
+      let html;
+      try { html = renderMarkdown(p.text); } catch (e) { html = null; }
+      el.append(html == null ? h('div', { class: 'md plain' }, p.text) : h('div', { class: 'md', html }));
+      any = true;
+    }
     if (p.kind === 'tool') {
       const live = item.live && i === parts.length - 1;
       el.append(h('div', { class: 'tool' + (live ? ' live' : '') }, p.label));
@@ -535,18 +540,29 @@ async function send(text) {
 
 function finishTurn(error, stopped) {
   if (!liveItem) return;
-  if (error) liveItem.parts.push({ kind: 'error', text: error });
-  if (stopped) liveItem.parts.push({ kind: 'error', text: 'Stopped.' });
-  liveItem.live = false;
-  fillAi(liveItem);
+  const item = liveItem;
   liveItem = null;
+  if (error) item.parts.push({ kind: 'error', text: error });
+  if (stopped) item.parts.push({ kind: 'error', text: 'Stopped.' });
+  item.live = false;
   setBusy(false);
+  try { fillAi(item); } catch (e) {}
   save();
   scrollDown();
 }
 
 P.onChat(ev => {
-  if (!liveItem) return;
+  if (!liveItem) {
+    if (ev.type !== 'proposal') return;
+    if (!thread.length) $('#thread').replaceChildren();
+    const item = { role: 'ai', parts: [{ kind: 'tool', label: 'Sent from Claude Code' }, { kind: 'card', card: ev.card, status: 'pending' }] };
+    thread.push(item);
+    $('#thread').append(renderItem(item));
+    save();
+    scrollDown(true);
+    P.toFront();
+    return;
+  }
   const parts = liveItem.parts;
   const last = parts[parts.length - 1];
   if (ev.type === 'text-start') {

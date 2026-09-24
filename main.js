@@ -255,6 +255,7 @@ const tools = createTools({
 for (const t of tools.tools) { const run = t.run; t.run = args => withLogin(() => run(args)); }
 
 let mcpConfigPath = null;
+let mcpUrl = null;
 let systemPromptPath = null;
 const claudeExe = findClaude();
 
@@ -268,11 +269,15 @@ function systemPrompt() {
 - Files Saif attaches are saved in ./uploads (see list_attached_files). Files you download from Canvas go to ./downloads. Read either with the Read tool.
 - Handing in: only when Saif asks you to submit or turn something in, call propose_submission. It does NOT submit. It shows him a confirmation card, and nothing reaches Canvas until he clicks Submit. Match the assignment by course, name, and due date. If more than one could fit, ask which one instead of picking. If the file type isn't accepted, say so rather than proposing.
 - Messages starting with "(Portal note:" come from the app, not from Saif. They report what happened to a confirmation card.
-- The chat renders Markdown. Keep answers easy to skim.`;
+- The chat renders Markdown. Keep answers easy to skim.
+- You run on Claude Sonnet, which the portal picks. The portal has no settings screen, so never send Saif to "settings". If he wants the app changed, say it's a change to the app itself.`;
 }
 
 async function bootMcp() {
-  const srv = await startMcp(tools.tools);
+  let { mcpToken } = readCfg();
+  if (!mcpToken) writeCfg({ mcpToken: (mcpToken = require('crypto').randomBytes(18).toString('hex')) });
+  const srv = await startMcp(tools.tools, { token: mcpToken, ports: [7345, 7346, 7347] });
+  mcpUrl = srv.url;
   fs.mkdirSync(workDir(), { recursive: true });
   mcpConfigPath = path.join(userData(), 'mcp.json');
   fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { canvas: { type: 'http', url: srv.url } } }));
@@ -303,6 +308,7 @@ function publicState() {
 }
 
 ipcMain.handle('state:get', () => publicState());
+ipcMain.handle('mcp:url', () => mcpUrl);
 
 ipcMain.handle('canvas:setBase', async (_e, raw, name) => {
   if (!String(raw || '').trim()) { writeCfg({ base: null, who: null, school: null }); return { ok: true, base: null }; }
@@ -528,6 +534,7 @@ ipcMain.handle('chat:send', async (_e, { text, files }) => {
   prompt += text;
 
   const t = runTurn({
+    model: readCfg().model || 'sonnet',
     exe: claudeExe,
     prompt,
     sessionId: readCfg().sessionId,

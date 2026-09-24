@@ -22,6 +22,7 @@
 
   function render(src) {
     const lines = esc(String(src || '')).replace(/\r/g, '').split('\n');
+    const listRe = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
     const out = [];
     let i = 0;
     while (i < lines.length) {
@@ -60,7 +61,6 @@
         continue;
       }
 
-      const listRe = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
       if (listRe.test(l)) {
         out.push(list());
         continue;
@@ -83,7 +83,7 @@
       const items = [];
       while (i < lines.length) {
         const m = lines[i].match(listRe);
-        if (m && m[1].length === indent) {
+        if (m && m[1].length === indent && /\d/.test(m[2]) === ordered) {
           items.push({ text: [m[3]], sub: [] });
           i++;
         } else if (m && m[1].length > indent && items.length) {

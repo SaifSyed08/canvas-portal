@@ -17,7 +17,7 @@ function findClaude() {
   } catch (e) { return null; }
 }
 
-function runTurn({ exe, prompt, sessionId, cwd, mcpConfig, systemPromptFile, onEvent }) {
+function runTurn({ exe, model, prompt, sessionId, cwd, mcpConfig, systemPromptFile, onEvent }) {
   const args = [
     '-p',
     '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
@@ -26,6 +26,7 @@ function runTurn({ exe, prompt, sessionId, cwd, mcpConfig, systemPromptFile, onE
     '--allowedTools', 'mcp__canvas,Read',
     '--append-system-prompt-file', systemPromptFile
   ];
+  if (model) args.push('--model', model);
   if (sessionId) args.push('--resume', sessionId);
 
   /* Started from inside another Claude Code session, the child would think it

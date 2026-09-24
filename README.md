@@ -18,3 +18,7 @@ npm start
 ```
 
 Your settings, the Canvas session, and attached files live in `%APPDATA%\Canvas Portal`.
+
+## From Claude Code in a terminal
+
+While the portal is open, it serves its Canvas tools on a fixed local address, so Claude Code anywhere on this computer can use them. The portal registers it once as `canvas-portal` (`claude mcp list` shows it). Then just ask: "what's due this week?", "read the Project 1 instructions". A hand-in proposed from the terminal shows up as a card in the portal window, and it still only goes out when you click Submit.

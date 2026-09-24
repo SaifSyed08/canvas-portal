@@ -520,3 +520,5 @@ body:has(.gate.open) .side, body:has(.gate.open) .main { transform: scale(.985);
 .eye.on { color: var(--accent); }
 
 .up-meta > span:first-child { white-space: nowrap; flex: none; }
+
+.md.plain { white-space: pre-wrap; }

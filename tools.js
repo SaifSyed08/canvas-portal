@@ -158,7 +158,7 @@ function createTools({ canvas, workDir, onProposal }) {
   function uploadsList() {
     return fs.readdirSync(uploadsDir).map(name => {
       const st = fs.statSync(path.join(uploadsDir, name));
-      return { name, size: st.size, path: 'uploads/' + name };
+      return { name, size: st.size, path: path.join(uploadsDir, name) };
     }).filter(f => f.size >= 0);
   }
 
@@ -169,7 +169,7 @@ function createTools({ canvas, workDir, onProposal }) {
     const buf = await canvas.download(meta.url, MAX_DOWNLOAD);
     const local = path.join(downloadsDir, `${fileId}-${safeName(name)}`);
     fs.writeFileSync(local, buf);
-    let readPath = 'downloads/' + path.basename(local);
+    let readPath = local;
     let note = 'Open it with the Read tool.';
     if (ext === '.docx' || ext === '.pptx') {
       try {
@@ -194,7 +194,12 @@ function createTools({ canvas, workDir, onProposal }) {
       throw new Error(`"${a.name}" is locked: ${htmlToText(a.lock_explanation) || 'Canvas is not accepting submissions.'}`);
 
     const picked = files.map(f => {
-      const name = path.basename(String(f).replace(/^uploads[\\/]/, ''));
+      let name = path.basename(String(f).replace(/^uploads[\\/]/, ''));
+      if (path.isAbsolute(String(f)) && fs.existsSync(String(f)) && path.dirname(path.resolve(String(f))) !== uploadsDir) {
+        if (fs.existsSync(path.join(uploadsDir, name)) && fs.statSync(path.join(uploadsDir, name)).size !== fs.statSync(String(f)).size)
+          name = Date.now().toString(36) + '-' + name;
+        fs.copyFileSync(String(f), path.join(uploadsDir, name));
+      }
       const full = path.join(uploadsDir, name);
       if (!fs.existsSync(full)) throw new Error(`"${name}" is not one of Saif's attached files. Attached: ${uploadsList().map(u => u.name).join(', ') || 'none'}`);
       const ext = path.extname(name).slice(1).toLowerCase();
@@ -221,7 +226,7 @@ function createTools({ canvas, workDir, onProposal }) {
     };
     proposals.set(card.id, card);
     onProposal(card);
-    return 'A confirmation card is now showing in the chat. Nothing has been submitted: Canvas only gets the file if Saif clicks "Submit" on the card. Tell him briefly what the card will hand in, and stop there.';
+    return 'A confirmation card is now showing in the Canvas Portal window. Nothing has been submitted: Canvas only gets the file if Saif clicks "Submit" on the card. Tell him briefly what the card will hand in, and stop there.';
   }
 
   async function submitProposal(id) {
@@ -383,7 +388,7 @@ function createTools({ canvas, workDir, onProposal }) {
       inputSchema: obj({
         course_id: id,
         assignment_id: id,
-        files: { type: 'array', items: { type: 'string' }, description: 'Names of attached files (see list_attached_files)' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Names of attached files (see list_attached_files), or full paths to files on this computer' },
         comment: { type: 'string', description: 'Optional submission comment, only if Saif asked for one' }
       }, ['course_id', 'assignment_id', 'files']),
       run: propose
