@@ -424,9 +424,10 @@ a { color: var(--accent); }
 .gate-title {
   font-family: var(--serif); font-weight: 400;
   font-size: 44px; line-height: 1.05; letter-spacing: -.01em;
-  margin: 0 0 10px;
+  margin: 4px 0 10px;
+  text-align: center;
 }
-.gate-sub { color: var(--muted); margin: 0 0 26px; font-size: 15px; }
+.gate-sub { color: var(--muted); margin: 0 0 28px; font-size: 15px; text-align: center; }
 .center { text-align: center; }
 
 .search {
@@ -504,3 +505,18 @@ body:has(.gate.open) .side, body:has(.gate.open) .main { transform: scale(.985);
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 48px !important; }
+.eye {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; border-radius: 9px;
+  border: 0; background: transparent; color: var(--faint);
+  display: grid; place-items: center;
+  transition: color .2s, background .2s;
+}
+.eye .ico { display: inline-grid; }
+.eye:hover { color: var(--text); background: var(--panel); }
+.eye.on { color: var(--accent); }
+
+.up-meta > span:first-child { white-space: nowrap; flex: none; }

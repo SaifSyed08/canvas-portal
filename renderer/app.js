@@ -93,6 +93,8 @@ const icon = svg => h('span', { class: 'ico', html: svg });
 const ICON_X = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const ICON_SEARCH = '<svg viewBox="0 0 20 20" width="18" height="18"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.2 13.2 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const ICON_KEY = '<svg viewBox="0 0 20 20" width="14" height="14"><circle cx="7" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.2 10H17m-2.5 0v2.6M17 10v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ICON_EYE = '<svg viewBox="0 0 20 20" width="17" height="17"><path d="M1.8 10S4.8 4.5 10 4.5 18.2 10 18.2 10 15.2 15.5 10 15.5 1.8 10 1.8 10Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 20 20" width="17" height="17"><path d="M3 3l14 14M8.2 5a8.6 8.6 0 0 1 1.8-.5c5.2 0 8.2 5.5 8.2 5.5a14 14 0 0 1-2.3 2.9M12.4 14.9a7.8 7.8 0 0 1-2.4.6C4.8 15.5 1.8 10 1.8 10a14.2 14.2 0 0 1 3.3-3.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.2 8.3a2.6 2.6 0 0 0 3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 const ICON_BACK = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M12 5l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 function openGate(step) {
@@ -196,7 +198,6 @@ const BUILD = {
     });
 
     return [
-      h('div', { class: 'kicker' }, 'Welcome'),
       h('h2', { class: 'gate-title' }, 'Find your school'),
       h('p', { class: 'gate-sub' }, 'Search by name, or paste the address you open Canvas at.'),
       h('form', { class: 'search', onsubmit: e => { e.preventDefault(); if (top) top(); } }, icon(ICON_SEARCH), input),
@@ -206,8 +207,17 @@ const BUILD = {
   },
 
   signin() {
-    const user = h('input', { type: 'email', placeholder: 'you@school.edu', value: state.savedUser || '', autocomplete: 'off', spellcheck: 'false' });
+    const eid = /utexas/.test(state.base) ? 'UT EID' : 'Username or school email';
+    const user = h('input', { type: 'text', placeholder: eid, value: state.savedUser || '', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
     const pass = h('input', { type: 'password', placeholder: state.savedUser ? 'Saved' : '', autocomplete: 'off' });
+    const eye = h('button', { type: 'button', class: 'eye', title: 'Show password', 'aria-label': 'Show password' }, icon(ICON_EYE));
+    eye.addEventListener('click', () => {
+      const show = pass.type === 'password';
+      pass.type = show ? 'text' : 'password';
+      eye.classList.toggle('on', show);
+      eye.title = show ? 'Hide password' : 'Show password';
+      eye.replaceChildren(icon(show ? ICON_EYE_OFF : ICON_EYE));
+    });
     const remember = h('input', { type: 'checkbox', checked: state.canSaveLogin });
     const note = h('div', { class: 'msg' });
     const label = h('span', {}, 'Sign in');
@@ -241,25 +251,27 @@ const BUILD = {
        while Chrome's password page is open, and wipes it once it has it. */
     const fromChrome = h('button', { type: 'button', class: 'chrome-btn', title: "Copy it from Chrome's saved passwords" }, icon(ICON_KEY), 'From Chrome');
     fromChrome.addEventListener('click', async () => {
-      const r = await P.chromePasswords(!!user.value.trim());
+      const r = await P.chromePasswords();
       note.className = 'msg' + (r.ok ? ' wait' : ' err');
-      note.textContent = r.ok
-        ? `Chrome's passwords are open${r.term ? `, searched for “${r.term}”` : ''}. Click the copy button next to your password and it comes in here by itself.`
-        : r.error;
+      note.textContent = !r.ok ? r.error
+        : `Chrome's saved password${r.site ? ' for ' + r.site : 's'} ${r.site ? 'is' : 'are'} open. Click the copy button next to the password and it comes in here by itself.`;
     });
     const stopCapture = P.onChromeCaptured(c => {
       if (!document.body.contains(pass)) return stopCapture();
-      if (c.kind === 'user') {
-        user.value = c.value;
-        note.className = 'msg wait';
-        note.textContent = 'Got your username. Now copy the password.';
-      } else if (c.kind === 'pass') {
+      if (c.kind === 'copied') {
         pass.value = c.value;
         remember.checked = true;
+        pass.classList.remove('flash');
+        void pass.offsetWidth;
         pass.classList.add('flash');
+        P.chromeStop();
+        P.toFront();
         note.className = 'msg ok';
-        note.textContent = user.value.trim() ? 'Got it from Chrome.' : 'Got the password. Add your school email above, then sign in.';
-        if (user.value.trim()) go();
+        if (user.value.trim()) { note.textContent = 'Got it from Chrome.'; go(); }
+        else {
+          note.textContent = `Got your password. Type your ${/utexas/.test(state.base) ? 'UT EID' : 'username'} above, then Sign in.`;
+          user.focus();
+        }
       } else if (c.kind === 'timeout') {
         note.className = 'msg';
         note.textContent = 'Stopped waiting for Chrome. Click From Chrome to try again.';
@@ -269,12 +281,12 @@ const BUILD = {
     if (state.loggingIn) setTimeout(() => busy(true, 'Signing you back in…'));
 
     return [
-      h('div', { class: 'kicker' }, state.school || new URL(state.base).host),
       h('h2', { class: 'gate-title' }, 'Sign in to Canvas'),
-      h('p', { class: 'gate-sub' }, 'Just once. After that the portal keeps you signed in.'),
+      h('p', { class: 'gate-sub' }, state.school || new URL(state.base).host),
       h('form', { class: 'gate-form', onsubmit: go },
-        state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, 'School email or username'), user),
-        state.canSaveLogin && h('div', { class: 'field' }, h('span', { class: 'field-head' }, 'Password', fromChrome), pass),
+        state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, /utexas/.test(state.base) ? 'UT EID' : 'Username'), user),
+        state.canSaveLogin && h('div', { class: 'field' }, h('span', { class: 'field-head' }, 'Password', fromChrome),
+          h('div', { class: 'pw-wrap' }, pass, eye)),
         state.canSaveLogin && h('label', { class: 'check' }, remember,
           h('span', {}, 'Keep me signed in. Saved encrypted, readable only by your Windows account.')),
         btn,

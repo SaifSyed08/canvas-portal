@@ -100,6 +100,30 @@ const FILL_SCRIPT = `(function (u, p, allowPassword) {
 let loginWin = null;
 let loginPromise = null;
 
+/* Canvas's session cookie has no expiry, so it would die with the app and
+   send Saif back through Duo every launch. Giving Canvas's own cookies 30
+   days keeps him signed in until Canvas itself ends the session. */
+async function keepSession(base) {
+  const s = canvasSession();
+  const host = new URL(base).hostname;
+  const until = Math.floor(Date.now() / 1000) + 30 * 86400;
+  try {
+    for (const c of await s.cookies.get({})) {
+      const dom = String(c.domain || '').replace(/^\./, '');
+      if (!dom || !(host === dom || host.endsWith('.' + dom))) continue;
+      if (c.expirationDate) continue;          // only the ones that would die with the app
+      await s.cookies.set({
+        url: 'https://' + dom + (c.path || '/'),
+        name: c.name, value: c.value,
+        domain: c.hostOnly ? undefined : c.domain,
+        path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+        sameSite: c.sameSite, expirationDate: until
+      });
+    }
+    await s.cookies.flushStore();
+  } catch (e) {}
+}
+
 /* One sign-in window at a time. `quiet` keeps it hidden while saved details
    do the work, and only shows it if something needs Saif — usually a Duo or
    Authenticator prompt — or if it stalls. */
@@ -131,7 +155,10 @@ function canvasLogin({ quiet = false } = {}) {
 
     const reveal = why => {
       if (loginWin && !loginWin.isDestroyed() && !loginWin.isVisible()) {
+        loginWin.setAlwaysOnTop(true);
         loginWin.show();
+        loginWin.focus();
+        setTimeout(() => { if (loginWin && !loginWin.isDestroyed()) loginWin.setAlwaysOnTop(false); }, 400);
         sendUI('login:status', why);
       }
     };
@@ -157,18 +184,33 @@ function canvasLogin({ quiet = false } = {}) {
       const wc = loginWin.webContents;
       const here = wc.getURL();
       if (here.startsWith(base) && !/\/login(\/|$|\?)/.test(here)) {
-        try {
-          const me = await canvas.get('/api/v1/users/self');
+        let me = null;
+        try { me = await canvas.get('/api/v1/users/self'); } catch (e) {}
+        if (!me) {
+          try {
+            const text = await wc.executeJavaScript(
+              "fetch('/api/v1/users/self', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.text() : '')");
+            if (text) me = JSON.parse(text.replace(/^while\(1\);/, ''));
+          } catch (e) {}
+        }
+        if (me && (me.id || me.name)) {
+          await keepSession(base);
           return finish({ ok: true, who: me.short_name || me.name || 'Canvas' });
-        } catch (e) { /* not through yet */ }
+        }
       }
+      if (/duosecurity\.com|duo\.com|microsoftonline\.com\/.*(mfa|sas)|okta\.com\/.*verify/i.test(here))
+        reveal('Approve the sign-in on your phone (Duo).');
       if (!creds || wc.isLoading()) return;
       try {
         const step = await wc.executeJavaScript(
           `${FILL_SCRIPT}(${JSON.stringify(creds.user)}, ${JSON.stringify(creds.pass)}, ${passwordTries < 1})`);
         /* Pages take a beat to move on after a click, so the same step showing
            up once more is normal. Three times in a row means it is stuck. */
-        if (step === 'password') passwordTries++;
+        if (step === 'password') {
+          passwordTries++;
+          const site = registrable(new URL(here).hostname);
+          if (site && readCfg().loginSite !== site) writeCfg({ loginSite: site });
+        }
         const key = here.split('#')[0] + '|' + step;
         seen.set(key, (seen.get(key) || 0) + 1);
         if (step !== 'none' && step !== 'password' && step !== 'waiting' && seen.get(key) >= 3)
@@ -242,11 +284,14 @@ async function bootMcp() {
 let turn = null;
 let notes = [];
 
+const tidySchool = name => String(name || '')
+  .replace(/(?!^)\b(Of|At|The|And|For|In|On)\b/g, w => w.toLowerCase());
+
 function publicState() {
   const c = readCfg();
   return {
     base: c.base || '',
-    school: c.school || (c.base ? new URL(c.base).host : ''),
+    school: tidySchool(c.school) || (c.base ? new URL(c.base).host : ''),
     who: c.who || null,
     savedUser: (c.login && c.login.user) || null,
     canSaveLogin: safeStorage.isEncryptionAvailable(),
@@ -268,7 +313,7 @@ ipcMain.handle('canvas:setBase', async (_e, raw, name) => {
   } catch (e) { return { ok: false, error: 'That does not look like a web address' }; }
   if (!base.startsWith('https://')) return { ok: false, error: 'Canvas addresses start with https://' };
   if (!(await isCanvas(base))) return { ok: false, error: `${new URL(base).host} is not a Canvas site. Try searching for your school's name instead.` };
-  writeCfg({ base, who: null, school: name ? String(name).slice(0, 120) : new URL(base).host });
+  writeCfg({ base, who: null, school: name ? String(name).slice(0, 120) : new URL(base).host, loginSite: await findLoginSite(base) });
   return { ok: true, base };
 });
 
@@ -341,22 +386,40 @@ ipcMain.handle('schools:search', async (_e, raw) => {
     .slice(0, 8);
 });
 
+/* Chrome files a saved password under the site of the page it was typed
+   into, which for single sign-on is the school's login server, not Canvas:
+   utexas.instructure.com → enterprise.login.utexas.edu → "utexas.edu".
+   Following /login's redirects finds that server without signing in. */
+function registrable(host) {
+  const parts = String(host || '').toLowerCase().split('.').filter(Boolean);
+  if (parts.length <= 2) return parts.join('.');
+  const two = parts.slice(-2).join('.');
+  return /^(co|ac|edu|gov|org|com|net)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join('.') : two;
+}
+async function findLoginSite(base) {
+  try {
+    const res = await fetch(base + '/login', { redirect: 'follow', signal: AbortSignal.timeout(8000) });
+    return registrable(new URL(res.url).hostname);
+  } catch (e) { return registrable(new URL(base).hostname); }
+}
+
 /* ── password from Chrome ──
    Chrome keeps its passwords locked to Chrome, and that is how it should be.
    What it does offer is a copy button, so the portal opens Chrome's password
-   page already searched for the school and watches the clipboard: the first
-   thing that looks like an email fills the username, anything else fills the
-   password, and the clipboard is wiped right after. */
+   page on the school's entry and watches the clipboard. What comes in goes
+   into the password box only (the username is yours to type, since guessing
+   which of two copies is which put them in the wrong boxes), and the
+   clipboard is wiped straight away. */
 const CHROME_PATHS = [
-  path.join(process.env.PROGRAMFILES || 'C:\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  path.join(process.env['PROGRAMFILES(X86)'] || 'C:\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
   path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe')
 ];
 let clipWatch = null;
 function stopClipWatch() { if (clipWatch) { clearInterval(clipWatch.timer); clipWatch = null; } }
 
 /* canvas.rice.edu → "rice", utexas.instructure.com → "utexas": that is also
-   what the school email ends in, which Chrome's search matches on. */
+   in the sign-in page's address, which Chrome's search matches on. */
 function schoolWord(base) {
   try {
     const parts = new URL(base).hostname.split('.');
@@ -365,18 +428,41 @@ function schoolWord(base) {
   } catch (e) { return ''; }
 }
 
-ipcMain.handle('chrome:passwords', (_e, { haveUser }) => {
+/* A window opened from the portal lands behind it (Windows keeps background
+   programs from taking focus), so it is pulled forward by title. */
+function bringToFront(titlePattern) {
+  try {
+    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+      '-File', path.join(__dirname, 'focus-window.ps1'), '-Title', titlePattern],
+      { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch (e) {}
+}
+
+function portalToFront() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.setAlwaysOnTop(true);
+  win.show();
+  win.focus();
+  setTimeout(() => { if (win) win.setAlwaysOnTop(false); }, 300);
+}
+
+ipcMain.handle('chrome:passwords', async () => {
   const exe = CHROME_PATHS.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } });
   if (!exe) return { ok: false, error: 'Chrome is not installed here' };
-  const term = schoolWord(readCfg().base);
+  const cfg = readCfg();
+  const term = schoolWord(cfg.base);
+  let site = cfg.loginSite;
+  if (!site && cfg.base) { site = await findLoginSite(cfg.base); writeCfg({ loginSite: site }); }
+  /* Straight to the saved entry for the school's login site. */
+  const page = 'chrome://password-manager/passwords' + (site ? '/' + site : '') + (term ? '?q=' + encodeURIComponent(term) : '');
   try {
-    spawn(exe, ['chrome://password-manager/passwords' + (term ? '?q=' + encodeURIComponent(term) : '')],
-      { detached: true, stdio: 'ignore' }).unref();
+    spawn(exe, [page], { detached: true, stdio: 'ignore' }).unref();
   } catch (e) { return { ok: false, error: 'Could not open Chrome' }; }
+  bringToFront('Password Manager');
 
   stopClipWatch();
   let last = clipboard.readText();
-  let wantUser = !haveUser;
   clipWatch = {
     started: Date.now(),
     timer: setInterval(() => {
@@ -384,21 +470,16 @@ ipcMain.handle('chrome:passwords', (_e, { haveUser }) => {
       const now = clipboard.readText();
       if (now === last) return;
       last = now;
-      const v = now;
-      if (!v.trim() || v.length > 256 || /[\r\n]/.test(v)) return;
-      if (wantUser && /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v)) {
-        wantUser = false;
-        return sendUI('chrome:captured', { kind: 'user', value: v });
-      }
-      sendUI('chrome:captured', { kind: 'pass', value: v });
-      if (clipboard.readText() === now) clipboard.clear();
-      stopClipWatch();
-      if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
-    }, 500)
+      if (!now.trim() || now.length > 256 || /[\r\n]/.test(now)) return;
+      sendUI('chrome:captured', { kind: 'copied', value: now });
+      clipboard.clear();
+      last = '';
+    }, 400)
   };
-  return { ok: true, term };
+  return { ok: true, term, site };
 });
 ipcMain.handle('chrome:stop', () => { stopClipWatch(); return true; });
+ipcMain.handle('window:front', () => { portalToFront(); return true; });
 
 ipcMain.handle('canvas:signout', async () => {
   await session.fromPartition(PARTITION).clearStorageData();
@@ -519,5 +600,15 @@ app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(
 app.whenReady().then(async () => {
   await bootMcp();
   createWindow();
+  /* A kept session means no sign-in at all: ask Canvas who this is. */
+  if (readCfg().base) {
+    try {
+      const me = await canvas.get('/api/v1/users/self');
+      writeCfg({ who: me.short_name || me.name || 'Canvas' });
+    } catch (e) {
+      writeCfg({ who: null });
+    }
+    sendUI('state:changed', publicState());
+  }
 });
 app.on('window-all-closed', () => { if (turn) turn.cancel(); app.quit(); });

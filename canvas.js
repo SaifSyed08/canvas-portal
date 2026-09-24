@@ -9,7 +9,6 @@
    and some schools answer the login page directly as 200 HTML; both mean
    the same thing. */
 
-const { net } = require('electron');
 const crypto = require('crypto');
 
 class NeedsLogin extends Error {
@@ -44,11 +43,13 @@ function createCanvas({ getBase, getSession }) {
       h['Content-Type'] = 'application/x-www-form-urlencoded';
     }
     if (method !== 'GET' && url.startsWith(base())) h['X-CSRF-Token'] = await csrf();
-    const res = await net.fetch(url, {
+    /* session.fetch, not net.fetch({ session }): the latter quietly uses the
+       default session and so sends none of the Canvas cookies. */
+    const res = await getSession().fetch(url, {
       method,
       headers: h,
       body: payload,
-      session: getSession(),
+      credentials: 'include',
       redirect: follow ? 'follow' : 'manual',
       signal: AbortSignal.timeout(60000)
     });
