@@ -4,7 +4,10 @@
    /api/v1 with those cookies, the same way the Canvas dashboard does. Two
    quirks come with that. Session-authenticated JSON starts with `while(1);`,
    and a lapsed session is not a 401 but a redirect to the login page, so
-   redirects are never followed on API calls and are read as "sign in again". */
+   redirects are never followed on API calls and are read as "sign in again".
+   An unfollowed redirect from net.fetch is opaque — status 0, no Location —
+   and some schools answer the login page directly as 200 HTML; both mean
+   the same thing. */
 
 const { net } = require('electron');
 const crypto = require('crypto');
@@ -53,7 +56,10 @@ function createCanvas({ getBase, getSession }) {
     return res;
   }
 
+  const bounced = res => !res.status || res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400);
+
   async function readJson(res) {
+    if (res.ok && !/json/i.test(res.headers.get('content-type') || '')) throw new NeedsLogin();
     const text = (await res.text()).replace(/^while\(1\);/, '');
     if (!text) return null;
     try { return JSON.parse(text); } catch (e) { throw new Error('Canvas sent something that was not JSON (status ' + res.status + ')'); }
@@ -70,7 +76,7 @@ function createCanvas({ getBase, getSession }) {
 
   async function get(path) {
     const res = await request(path);
-    if (res.status >= 300 && res.status < 400) throw new NeedsLogin();
+    if (bounced(res)) throw new NeedsLogin();
     if (!res.ok) throw await failure(res);
     return readJson(res);
   }
@@ -80,7 +86,7 @@ function createCanvas({ getBase, getSession }) {
     let url = path, out = [];
     while (url && out.length < cap) {
       const res = await request(url);
-      if (res.status >= 300 && res.status < 400) throw new NeedsLogin();
+      if (bounced(res)) throw new NeedsLogin();
       if (!res.ok) throw await failure(res);
       const page = await readJson(res);
       out = out.concat(Array.isArray(page) ? page : []);
@@ -93,7 +99,7 @@ function createCanvas({ getBase, getSession }) {
 
   async function send(path, method, pairs) {
     const res = await request(path, { method, form: pairs });
-    if (res.status >= 300 && res.status < 400) throw new NeedsLogin();
+    if (bounced(res)) throw new NeedsLogin();
     if (!res.ok) throw await failure(res);
     return readJson(res);
   }
@@ -125,27 +131,21 @@ function createCanvas({ getBase, getSession }) {
       `Content-Type: ${file.type}\r\n\r\n`));
     parts.push(file.data, Buffer.from(`\r\n--${boundary}--\r\n`));
 
+    /* Canvas may finish with a redirect to a confirm URL that has to be
+       fetched with the session; following it does exactly that (a redirected
+       POST turns into a GET). */
     const up = await request(pre.upload_url, {
       method: 'POST',
       body: Buffer.concat(parts),
-      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary }
+      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+      follow: true
     });
-
-    let done;
-    if (up.status >= 300 && up.status < 400) {
-      const loc = up.headers.get('location');
-      if (!loc) throw new Error('The upload finished without saying where the file went');
-      const res = await request(new URL(loc, pre.upload_url).href, { follow: true });
+    if (!up.ok) throw await failure(up);
+    let done = await readJson(up);
+    if (done && done.id == null && done.location) {
+      const res = await request(done.location, { follow: true });
       if (!res.ok) throw await failure(res);
       done = await readJson(res);
-    } else {
-      if (!up.ok) throw await failure(up);
-      done = await readJson(up);
-      if (done && done.id == null && done.location) {
-        const res = await request(done.location, { follow: true });
-        if (!res.ok) throw await failure(res);
-        done = await readJson(res);
-      }
     }
     if (!done || done.id == null) throw new Error('Canvas did not confirm the upload');
     return done.id;
