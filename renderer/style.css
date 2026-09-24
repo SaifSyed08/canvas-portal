@@ -522,3 +522,36 @@ body:has(.gate.open) .side, body:has(.gate.open) .main { transform: scale(.985);
 .up-meta > span:first-child { white-space: nowrap; flex: none; }
 
 .md.plain { white-space: pre-wrap; }
+
+/* ── coming-up rows: tick, body, paperclip ── */
+.up-item {
+  display: grid; grid-template-columns: 26px 1fr auto; align-items: start; gap: 2px;
+  width: 100%; padding: 4px 4px 4px 6px; border-radius: 10px;
+  transition: background .2s;
+}
+.up-item:hover { background: var(--panel); }
+.up-body { text-align: left; border: 0; background: transparent; padding: 3px 4px; min-width: 0; }
+.tick {
+  width: 18px; height: 18px; margin-top: 5px; border-radius: 50%;
+  border: 1.5px solid var(--line-strong); background: transparent; color: transparent;
+  display: grid; place-items: center; padding: 0;
+  transition: background .25s var(--ease), border-color .25s, color .2s, transform .25s var(--ease);
+}
+.tick .ico { display: inline-grid; transform: scale(.4); transition: transform .3s var(--ease); }
+.tick:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+.tick.on { background: var(--ok); border-color: var(--ok); color: var(--panel); }
+.tick.on .ico { transform: scale(1); }
+.tick:active:not(:disabled) { transform: scale(.88); }
+.tick:disabled { cursor: default; }
+.finished .up-title { color: var(--faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--faint) 60%, transparent); }
+.clip {
+  width: 28px; height: 28px; margin-top: 1px; border-radius: 8px;
+  border: 0; background: transparent; color: var(--faint);
+  display: grid; place-items: center; opacity: .0;
+  transition: opacity .2s, background .2s, color .2s;
+}
+.clip .ico { display: inline-grid; }
+.up-item:hover .clip, .clip:focus-visible { opacity: 1; }
+.clip:hover { background: var(--bg); color: var(--accent); }
+.clip.busy { opacity: 1; animation: pulse 1s infinite; }
+.up-err { grid-column: 2 / -1; font-size: 12px; color: var(--bad); padding: 0 4px 4px; }

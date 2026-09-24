@@ -334,12 +334,20 @@ async function loadUpcoming() {
   renderUpcoming(r.items);
 }
 
+/* Only things you hand in belong here. Announcements and calendar events
+   are on the planner too, but they are not work and cannot be "missing". */
+const WORK = new Set(['assignment', 'quiz', 'discussion_topic', 'wiki_page', 'planner_note']);
+const shortCourse = c => String(c || '').replace(/^(Fa|Sp|Su|Wi)\d{2}\s*-\s*/i, '');
+const ICON_CHECK = '<svg viewBox="0 0 20 20" width="12" height="12"><path d="M5 10.5l3.2 3.2L15 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_CLIP = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M14.5 9.5 9.3 14.7a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-5.8 5.8a1 1 0 0 1-1.5-1.5L11.8 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 function renderUpcoming(items, empty) {
   const list = $('#upcoming');
   list.replaceChildren();
   const now = startOfDay(new Date());
   const show = items
-    .filter(i => i.due && i.type !== 'calendar_event' && (new Date(i.due) >= now || (i.missing && !i.submitted)))
+    .filter(i => i.due && WORK.has(i.type))
+    .filter(i => new Date(i.due) >= now || (i.missing && !i.submitted && !i.done))
     .sort((a, b) => new Date(a.due) - new Date(b.due));
   if (!show.length) {
     list.append(h('div', { class: 'up-empty' }, empty || 'Nothing due in the next two weeks.'));
@@ -348,20 +356,73 @@ function renderUpcoming(items, empty) {
   let day = '';
   for (const it of show) {
     const d = new Date(it.due);
-    const overdue = d < new Date() && !it.submitted;
+    const finished = () => it.submitted || it.done;
+    const overdue = d < new Date() && !finished();
     const label = overdue ? 'Overdue' : dayLabel(d);
     if (label !== day) { day = label; list.append(h('div', { class: 'up-day' }, label)); }
-    const pill = it.submitted ? h('span', { class: 'pill done' }, 'Done')
+
+    const row = h('div', { class: 'up-item' + (finished() ? ' finished' : '') });
+    const pill = () => it.submitted ? h('span', { class: 'pill done' }, 'Submitted')
+      : it.done ? null
       : it.missing || overdue ? h('span', { class: 'pill missing' }, 'Missing')
       : null;
-    list.append(h('button', {
-      class: 'up-item',
+    const meta = h('div', { class: 'up-meta' });
+    const paintMeta = () => meta.replaceChildren(...[h('span', {}, timeOf(d)), h('span', {}, '\u00b7'), h('span', { class: 'course' }, shortCourse(it.course)), pill()].filter(Boolean));
+    paintMeta();
+
+    /* The circle: submitted work is ticked by Canvas and stays that way;
+       anything else can be ticked by hand. */
+    const tick = h('button', {
+      class: 'tick' + (finished() ? ' on' : ''),
+      title: it.submitted ? 'Submitted' : it.done ? 'Marked done. Click to undo' : 'Mark as done',
+      'aria-label': 'Mark as done',
+      disabled: it.submitted
+    }, icon(ICON_CHECK));
+    tick.addEventListener('click', async e => {
+      e.stopPropagation();
+      const want = !it.done;
+      it.done = want;
+      tick.classList.toggle('on', want);
+      row.classList.toggle('finished', want);
+      tick.title = want ? 'Marked done. Click to undo' : 'Mark as done';
+      paintMeta();
+      const r = await P.plannerDone({ type: it.type, plannable_id: it.plannable_id, override_id: it.override_id, done: want });
+      if (r.ok) { if (r.override_id) it.override_id = r.override_id; return; }
+      it.done = !want;
+      tick.classList.toggle('on', !want);
+      row.classList.toggle('finished', !want);
+      paintMeta();
+      flashError(row, r.error);
+    });
+
+    const clip = it.type === 'assignment' && !it.submitted && it.assignment_id
+      ? h('button', { class: 'clip', title: 'Hand in a file', 'aria-label': 'Hand in a file' }, icon(ICON_CLIP))
+      : null;
+    if (clip) clip.addEventListener('click', async e => {
+      e.stopPropagation();
+      clip.classList.add('busy');
+      const r = await P.handIn({ course_id: it.course_id, assignment_id: it.assignment_id, title: it.title });
+      clip.classList.remove('busy');
+      if (!r.ok && !r.canceled) flashError(row, r.error);
+    });
+
+    const body = h('button', {
+      class: 'up-body',
       title: 'Ask about this',
       onclick: () => ask(`What do I need to do for "${it.title}" in ${it.course}?`)
-    },
-      h('div', { class: 'up-title' }, it.title),
-      h('div', { class: 'up-meta' }, h('span', {}, timeOf(d)), h('span', {}, '·'), h('span', { class: 'course' }, it.course || ''), pill)));
+    }, h('div', { class: 'up-title' }, it.title), meta);
+
+    row.append(tick, body, clip || '');
+    list.append(row);
   }
+}
+
+function flashError(row, text) {
+  const old = row.querySelector('.up-err');
+  if (old) old.remove();
+  const el = h('div', { class: 'up-err' }, text || 'That did not work.');
+  row.append(el);
+  setTimeout(() => el.remove(), 6000);
 }
 
 /* ── thread rendering ── */
@@ -552,10 +613,11 @@ function finishTurn(error, stopped) {
 }
 
 P.onChat(ev => {
-  if (!liveItem) {
+  if (!liveItem || (ev.type === 'proposal' && ev.card.source === 'you')) {
     if (ev.type !== 'proposal') return;
     if (!thread.length) $('#thread').replaceChildren();
-    const item = { role: 'ai', parts: [{ kind: 'tool', label: 'Sent from Claude Code' }, { kind: 'card', card: ev.card, status: 'pending' }] };
+    const label = ev.card.source === 'you' ? 'Hand-in from Coming up' : 'Sent from Claude Code';
+    const item = { role: 'ai', parts: [{ kind: 'tool', label }, { kind: 'card', card: ev.card, status: 'pending' }] };
     thread.push(item);
     $('#thread').append(renderItem(item));
     save();

@@ -161,7 +161,7 @@ function createCanvas({ getBase, getSession }) {
     return send(`/api/v1/courses/${courseId}/assignments/${assignmentId}/submissions`, 'POST', pairs);
   }
 
-  return { get, getAll, download, submitFiles, base };
+  return { get, getAll, send, download, submitFiles, base };
 }
 
 module.exports = { createCanvas, NeedsLogin };

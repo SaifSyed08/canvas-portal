@@ -517,6 +517,25 @@ function addFiles(paths) {
   return out;
 }
 ipcMain.handle('files:add', (_e, paths) => addFiles(paths));
+
+ipcMain.handle('planner:done', async (_e, item) => {
+  try {
+    const r = await withLogin(() => tools.setDone(item));
+    return { ok: true, override_id: r && r.id };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+/* The paperclip on an assignment: pick a file, get the same confirmation
+   card the chat would make. Nothing goes to Canvas until Submit. */
+ipcMain.handle('handin:pick', async (_e, { course_id, assignment_id, title }) => {
+  const r = await dialog.showOpenDialog(win, { title: 'Hand in: ' + (title || 'assignment'), properties: ['openFile', 'multiSelections'] });
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  const files = addFiles(r.filePaths);
+  try {
+    await withLogin(() => tools.propose({ course_id, assignment_id, files: files.map(f => f.name), source: 'you' }));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 ipcMain.handle('files:pick', async () => {
   const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
   return r.canceled ? [] : addFiles(r.filePaths);
@@ -530,7 +549,10 @@ ipcMain.handle('chat:send', async (_e, { text, files }) => {
   let prompt = '';
   if (notes.length) { prompt += notes.map(n => '(Portal note: ' + n + ')').join('\n') + '\n\n'; notes = []; }
   if (files && files.length)
-    prompt += 'Attached: ' + files.map(f => `uploads/${f.name}`).join(', ') + '\n\n';
+    prompt += 'Attached: ' + files.map(f => {
+      const readable = tools.readableCopy(f.name);
+      return `uploads/${f.name}` + (readable ? ` (a rendered page; read the text version at ${readable} instead, the original is mostly embedded images)` : '');
+    }).join(', ') + '\n\n';
   prompt += text;
 
   const t = runTurn({

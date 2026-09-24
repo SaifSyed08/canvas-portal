@@ -146,9 +146,24 @@ function createTools({ canvas, workDir, onProposal }) {
         due: it.plannable_date,
         points: p.points_possible,
         submitted: !!sub.submitted, missing: !!sub.missing, late: !!sub.late, graded: !!sub.graded,
+        plannable_id: it.plannable_id,
+        done: !!(it.planner_override && it.planner_override.marked_complete),
+        override_id: it.planner_override ? it.planner_override.id : null,
         url: it.html_url ? canvas.base() + it.html_url : null
       };
     });
+  }
+
+  /* Canvas's own planner checkbox (the one on the dashboard's list view), so
+     "done" shows up on the website and the phone app too. It never submits
+     anything; it is for work that is finished some other way, like a group
+     project one teammate handed in. */
+  async function setDone({ type, plannable_id, override_id, done }) {
+    if (override_id)
+      return canvas.send(`/api/v1/planner/overrides/${override_id}`, 'PUT', [['marked_complete', done ? 'true' : 'false']]);
+    return canvas.send('/api/v1/planner/overrides', 'POST', [
+      ['plannable_type', type], ['plannable_id', plannable_id], ['marked_complete', done ? 'true' : 'false']
+    ]);
   }
 
   async function assignment(courseId, assignmentId) {
@@ -184,7 +199,7 @@ function createTools({ canvas, workDir, onProposal }) {
     return { name, size: buf.length, content_type: meta['content-type'], path: readPath, note };
   }
 
-  async function propose({ course_id, assignment_id, files, comment }) {
+  async function propose({ course_id, assignment_id, files, comment, source }) {
     if (!Array.isArray(files) || !files.length) throw new Error('Name at least one attached file to hand in.');
     const a = await assignment(course_id, assignment_id);
     const types = a.submission_types || [];
@@ -220,6 +235,7 @@ function createTools({ canvas, workDir, onProposal }) {
       url: a.html_url,
       files: picked,
       comment: comment || '',
+      source: source || 'claude',
       previous: sub.workflow_state && sub.workflow_state !== 'unsubmitted'
         ? { attempt: sub.attempt, submitted_at: sub.submitted_at, state: sub.workflow_state } : null,
       attempts_left: a.allowed_attempts > 0 ? a.allowed_attempts - (sub.attempt || 0) : null
@@ -245,6 +261,29 @@ function createTools({ canvas, workDir, onProposal }) {
       submitted_at: (sub && sub.submitted_at) || new Date().toISOString(),
       late: !!(sub && sub.late)
     };
+  }
+
+  /* Rendered notebooks (Quarto, R Markdown, Jupyter) inline every image and
+     font as base64, so a 2 MB page is mostly unreadable lines. The readable
+     copy keeps the text, code and headings, marks where images were, and
+     sits beside the original, which stays untouched for handing in. */
+  function readableCopy(name) {
+    const ext = path.extname(name).toLowerCase();
+    if (ext !== '.html' && ext !== '.htm') return null;
+    const src = path.join(uploadsDir, name);
+    let html;
+    try { html = fs.readFileSync(src, 'utf8'); } catch (e) { return null; }
+    const text = htmlToText(html
+      .replace(/<head[\s\S]*?<\/head>/i, '')
+      .replace(/<(script|style|svg|noscript)[\s\S]*?<\/\1>/gi, '')
+      .replace(/<img[^>]*alt="([^"]*)"[^>]*>/gi, (_, alt) => `\n[image${alt ? ': ' + alt : ''}]\n`)
+      .replace(/<img[^>]*>/gi, '\n[image]\n')
+      .replace(/data:[a-z/+.-]+;base64,[A-Za-z0-9+/=]+/g, '[embedded data]'));
+    const dir = path.join(workDir, 'readable');
+    fs.mkdirSync(dir, { recursive: true });
+    const out = path.join(dir, name.replace(/\.html?$/i, '') + '.txt');
+    fs.writeFileSync(out, text);
+    return out;
   }
 
   const dismissProposal = id => { const c = proposals.get(id); proposals.delete(id); return c; };
@@ -377,6 +416,17 @@ function createTools({ canvas, workDir, onProposal }) {
       }
     },
     {
+      name: 'mark_done',
+      description: "Tick (or untick) an item on Saif's Canvas planner, the same checkbox as Canvas's list view. It does not submit anything. Use it for work finished another way, like a group project a teammate handed in, and only when he asks. Takes the type, plannable_id and override_id from upcoming.",
+      inputSchema: obj({
+        type: { type: 'string', description: 'Item type from upcoming, e.g. assignment, quiz, discussion_topic' },
+        plannable_id: id,
+        override_id: { ...id, description: 'From upcoming, if present' },
+        done: { type: 'boolean', description: 'true to tick, false to untick (default true)' }
+      }, ['type', 'plannable_id']),
+      run: async a => { await setDone({ ...a, done: a.done !== false }); return a.done === false ? 'Unticked.' : 'Ticked on the Canvas planner.'; }
+    },
+    {
       name: 'list_attached_files',
       description: 'Files Saif has attached in this app, which you can Read and which propose_submission can hand in.',
       inputSchema: obj({}),
@@ -395,7 +445,7 @@ function createTools({ canvas, workDir, onProposal }) {
     }
   ];
 
-  return { tools, upcoming, submitProposal, dismissProposal, hasProposal, uploadsDir };
+  return { tools, upcoming, setDone, propose, readableCopy, submitProposal, dismissProposal, hasProposal, uploadsDir };
 }
 
 module.exports = { createTools };

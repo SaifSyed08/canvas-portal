@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('portal', {
   onChromeCaptured: on('chrome:captured'),
   upcoming: () => ipcRenderer.invoke('canvas:upcoming'),
   pickFiles: () => ipcRenderer.invoke('files:pick'),
+  plannerDone: item => ipcRenderer.invoke('planner:done', item),
+  handIn: a => ipcRenderer.invoke('handin:pick', a),
   addFiles: files => ipcRenderer.invoke('files:add', [...files].map(f => webUtils.getPathForFile(f)).filter(Boolean)),
   send: (text, files) => ipcRenderer.invoke('chat:send', { text, files }),
   stop: () => ipcRenderer.invoke('chat:stop'),
