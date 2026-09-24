@@ -46,102 +46,205 @@ const STORE = 'portal.chat.v1';
 function save() { try { localStorage.setItem(STORE, JSON.stringify(thread.slice(-200))); } catch (e) {} }
 function load() { try { thread = JSON.parse(localStorage.getItem(STORE)) || []; } catch (e) { thread = []; } }
 
-/* ── account panel ── */
-function renderAccount(msg) {
+/* ── account (sidebar) ── */
+function renderAccount() {
   const box = $('#account');
   box.replaceChildren();
+  if (!state.base || !state.who) {
+    box.append(h('div', { class: 'acct-card acct-out' },
+      h('div', { class: 'acct-name' }, 'Not signed in'),
+      h('div', { class: 'acct-sub' }, state.base ? state.school : 'Connect your Canvas to start'),
+      h('button', { class: 'btn wide', style: 'margin-top:10px', onclick: () => { gateDismissed = false; syncGate(); } },
+        state.base ? 'Sign in' : 'Connect Canvas')));
+    return;
+  }
+  const host = new URL(state.base).host;
+  box.append(h('div', { class: 'acct-card' },
+    h('div', { class: 'acct-row' },
+      h('div', { class: 'avatar' }, (state.who || '?').trim().charAt(0).toUpperCase()),
+      h('div', { style: 'min-width:0' },
+        h('div', { class: 'acct-name' }, state.who),
+        h('div', { class: 'acct-sub' }, state.school || host))),
+    h('div', { class: 'acct-actions' },
+      h('button', { class: 'link-btn', onclick: () => P.open(state.base) }, 'Open Canvas'),
+      state.savedUser
+        ? h('button', { class: 'link-btn', onclick: async () => { await P.forgetLogin(); state = await P.state(); renderAccount(); } }, 'Forget saved login')
+        : null,
+      h('button', { class: 'link-btn', onclick: async () => { state = await P.signOut(); renderAccount(); renderUpcoming([]); syncGate(); } }, 'Sign out'))));
+}
 
-  if (!state.base) {
-    const input = h('input', { placeholder: 'e.g. Rice University', spellcheck: 'false', autocomplete: 'off' });
+/* ── the sign-in gate ──
+   Full-window, over a blurred and dimmed app. It opens whenever there is no
+   school or no session, moves between steps with a slide, and dissolves
+   once Canvas answers. */
+let gate = null;
+let gateDismissed = false;
+const STEPS = ['school', 'signin', 'done'];
+
+function gateStep() { return !state.base ? 'school' : !state.who ? 'signin' : null; }
+
+function syncGate() {
+  const step = gateStep();
+  if (step && !gateDismissed) openGate(step);
+  else if (!step && gate && gate.step !== 'done') showStep('done');
+}
+
+const icon = svg => h('span', { class: 'ico', html: svg });
+const ICON_X = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ICON_SEARCH = '<svg viewBox="0 0 20 20" width="18" height="18"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.2 13.2 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ICON_KEY = '<svg viewBox="0 0 20 20" width="14" height="14"><circle cx="7" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.2 10H17m-2.5 0v2.6M17 10v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ICON_BACK = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M12 5l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function openGate(step) {
+  if (!gate) {
+    const stage = h('div', { class: 'gate-stage' });
+    const el = h('div', { class: 'gate', role: 'dialog', 'aria-modal': 'true' },
+      h('div', { class: 'gate-card' },
+        h('button', { class: 'gate-x', title: 'Not now', 'aria-label': 'Close', onclick: () => { gateDismissed = true; closeGate(); } }, icon(ICON_X)),
+        stage));
+    document.body.append(el);
+    el.getBoundingClientRect();
+    el.classList.add('open');
+    gate = { el, stage, step: null };
+  }
+  if (gate.step !== step) showStep(step);
+}
+
+function closeGate() {
+  if (!gate) return;
+  const g = gate;
+  gate = null;
+  P.chromeStop();
+  g.el.classList.remove('open');
+  g.el.classList.add('closing');
+  setTimeout(() => g.el.remove(), 520);
+}
+
+function showStep(step) {
+  const stage = gate.stage;
+  const dir = STEPS.indexOf(step) >= STEPS.indexOf(gate.step) ? 1 : -1;
+  const prev = stage.querySelector('.gate-step:not(.leaving)');
+  const from = stage.offsetHeight;
+  const next = h('div', { class: 'gate-step' }, ...BUILD[step]());
+  next.style.setProperty('--dir', dir);
+  stage.append(next);
+  if (prev) {
+    prev.style.setProperty('--dir', dir);
+    prev.classList.add('leaving');
+    setTimeout(() => prev.remove(), 320);
+    stage.animate([{ height: from + 'px' }, { height: next.offsetHeight + 'px' }],
+      { duration: 520, easing: 'cubic-bezier(.16,1,.3,1)' });
+  }
+  gate.step = step;
+  setTimeout(() => { const f = next.querySelector('input:not([type=checkbox])'); if (f && !f.value) f.focus(); }, 140);
+}
+
+const BUILD = {
+  school() {
+    const input = h('input', { class: 'big-input', placeholder: 'Your school’s name', spellcheck: 'false', autocomplete: 'off' });
     const results = h('div', { class: 'schools' });
-    const note = h('div', { class: 'msg' + (msg && msg.err ? ' err' : '') }, msg ? msg.text : '');
-    const pick = async domain => {
-      const r = await P.setBase(domain);
-      if (!r.ok) return renderAccount({ err: true, text: r.error });
+    const note = h('div', { class: 'msg' });
+    const looksLikeAddress = v => /\.[a-z]{2,}(\/|$)/i.test(v.trim()) && !/\s/.test(v.trim());
+    let seq = 0, timer = 0, top = null;
+
+    const pick = async (domain, name, row) => {
+      results.querySelectorAll('.school').forEach(b => b.classList.toggle('dim', b !== row));
+      if (row) row.classList.add('picked');
+      const r = await P.setBase(domain, name);
+      if (!r.ok) {
+        results.querySelectorAll('.school').forEach(b => b.classList.remove('dim', 'picked'));
+        note.className = 'msg err';
+        note.textContent = r.error;
+        return;
+      }
       state = await P.state();
       renderAccount();
+      showStep('signin');
     };
-    const looksLikeAddress = v => /\.[a-z]{2,}(\/|$)/i.test(v.trim()) && !/\s/.test(v.trim());
 
-    let seq = 0, timer = 0, top = null;
-    const search = () => {
+    const row = (name, dom, i, onclick) => {
+      const b = h('button', { type: 'button', class: 'school', style: `animation-delay:${i * 35}ms` },
+        h('div', { class: 'school-name' }, name), h('div', { class: 'school-dom' }, dom));
+      b.addEventListener('click', () => onclick(b));
+      return b;
+    };
+
+    input.addEventListener('input', () => {
       clearTimeout(timer);
+      note.textContent = '';
       const v = input.value.trim();
       timer = setTimeout(async () => {
         const mine = ++seq;
-        results.replaceChildren();
         top = null;
         if (looksLikeAddress(v)) {
-          top = v;
-          results.append(h('button', { type: 'button', class: 'school', onclick: () => pick(v) },
-            h('div', { class: 'school-name' }, 'Use this address'), h('div', { class: 'school-dom' }, v)));
+          results.replaceChildren(row('Use this address', v, 0, b => pick(v, null, b)));
+          top = () => pick(v, null, results.firstChild);
           return;
         }
-        if (v.length < 2) return;
-        results.append(h('div', { class: 'schools-note' }, 'Searching…'));
+        if (v.length < 2) return results.replaceChildren();
+        results.classList.add('loading');
         const list = await P.searchSchools(v);
         if (mine !== seq) return;
-        results.replaceChildren();
+        results.classList.remove('loading');
         if (!list.length) {
-          results.append(h('div', { class: 'schools-note' },
-            'No match. Try your school’s full name, or type the address you open Canvas at.'));
+          results.replaceChildren(h('div', { class: 'schools-note' }, 'No match yet. Try the full name, or paste the address you open Canvas at.'));
           return;
         }
-        top = list[0].domain;
-        for (const s of list) results.append(h('button', { type: 'button', class: 'school', onclick: () => pick(s.domain) },
-          h('div', { class: 'school-name' }, s.name), h('div', { class: 'school-dom' }, s.domain)));
-      }, looksLikeAddress(v) ? 0 : 280);
-    };
-    input.addEventListener('input', search);
+        results.replaceChildren(...list.map((s, i) => row(s.name, s.domain, i, b => pick(s.domain, s.name, b))));
+        top = () => pick(list[0].domain, list[0].name, results.firstChild);
+      }, looksLikeAddress(v) ? 0 : 260);
+    });
 
-    box.append(h('form', { class: 'acct-card setup', onsubmit: e => { e.preventDefault(); if (top) pick(top); } },
-      h('h3', {}, 'Find your school'),
-      h('p', {}, 'Search by name, or type the Canvas address if you know it.'),
-      h('label', { class: 'field' }, h('span', {}, 'School'), input),
+    return [
+      h('div', { class: 'kicker' }, 'Welcome'),
+      h('h2', { class: 'gate-title' }, 'Find your school'),
+      h('p', { class: 'gate-sub' }, 'Search by name, or paste the address you open Canvas at.'),
+      h('form', { class: 'search', onsubmit: e => { e.preventDefault(); if (top) top(); } }, icon(ICON_SEARCH), input),
       results,
-      note));
-    setTimeout(() => input.focus());
-    return;
-  }
+      note
+    ];
+  },
 
-  const host = new URL(state.base).host;
-
-  if (!state.who) {
+  signin() {
     const user = h('input', { type: 'email', placeholder: 'you@school.edu', value: state.savedUser || '', autocomplete: 'off', spellcheck: 'false' });
-    const pass = h('input', { type: 'password', placeholder: state.savedUser ? '••••••••  (saved)' : '', autocomplete: 'off' });
+    const pass = h('input', { type: 'password', placeholder: state.savedUser ? 'Saved' : '', autocomplete: 'off' });
     const remember = h('input', { type: 'checkbox', checked: state.canSaveLogin });
-    const note = h('div', { class: 'msg' + (msg && msg.err ? ' err' : '') }, msg ? msg.text : '');
-    const btn = h('button', { class: 'btn wide' }, 'Sign in');
+    const note = h('div', { class: 'msg' });
+    const label = h('span', {}, 'Sign in');
+    const btn = h('button', { class: 'btn big wide' }, h('span', { class: 'spinner' }), label);
+
+    const busy = (on, text) => {
+      btn.disabled = on;
+      btn.classList.toggle('busy', on);
+      label.textContent = on ? 'Signing in' : 'Sign in';
+      if (text != null) { note.className = 'msg'; note.textContent = text; }
+    };
 
     const go = async e => {
-      e.preventDefault();
+      if (e) e.preventDefault();
       P.chromeStop();
       if (remember.checked && user.value && pass.value) {
         const r = await P.saveLogin(user.value, pass.value);
         if (!r.ok) { note.className = 'msg err'; note.textContent = r.error; return; }
       }
-      btn.disabled = true;
-      btn.textContent = 'Signing in…';
-      note.className = 'msg';
-      note.textContent = (remember.checked && (pass.value || state.savedUser))
-        ? 'Signing in with your saved details. If your school asks for a code or a phone approval, a window will pop up.'
-        : 'Finish signing in in the window that opened.';
+      busy(true, (remember.checked && (pass.value || state.savedUser))
+        ? 'Signing in with your details. If your school asks for a code or a phone approval, a window will open for it.'
+        : 'Finish signing in in the window that opened.');
       const r = await P.login();
       state = await P.state();
-      if (r.ok) { renderAccount(); loadUpcoming(); }
-      else renderAccount({ err: true, text: r.error });
+      renderAccount();
+      if (r.ok) { loadUpcoming(); showStep('done'); }
+      else { busy(false); note.className = 'msg err'; note.textContent = r.error; }
     };
 
     /* Chrome's copy button → clipboard → here. Main watches the clipboard
        while Chrome's password page is open, and wipes it once it has it. */
-    const fromChrome = h('button', { type: 'button', class: 'chrome-btn', title: "Copy it from Chrome's saved passwords" },
-      h('span', { class: 'ico', html: '<svg viewBox="0 0 20 20" width="14" height="14"><circle cx="7" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.2 10H17m-2.5 0v2.6M17 10v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' }),
-      'From Chrome');
+    const fromChrome = h('button', { type: 'button', class: 'chrome-btn', title: "Copy it from Chrome's saved passwords" }, icon(ICON_KEY), 'From Chrome');
     fromChrome.addEventListener('click', async () => {
       const r = await P.chromePasswords(!!user.value.trim());
       note.className = 'msg' + (r.ok ? ' wait' : ' err');
       note.textContent = r.ok
-        ? `Chrome's passwords are open${r.term ? ` and searched for “${r.term}”` : ''}. Click the copy button next to your school password. It comes in here by itself.`
+        ? `Chrome's passwords are open${r.term ? `, searched for “${r.term}”` : ''}. Click the copy button next to your password and it comes in here by itself.`
         : r.error;
     });
     const stopCapture = P.onChromeCaptured(c => {
@@ -153,44 +256,56 @@ function renderAccount(msg) {
       } else if (c.kind === 'pass') {
         pass.value = c.value;
         remember.checked = true;
+        pass.classList.add('flash');
         note.className = 'msg ok';
-        note.textContent = user.value.trim() ? 'Got it from Chrome. Signing in…' : 'Got the password. Type your school email above, then Sign in.';
-        if (user.value.trim()) btn.click();
+        note.textContent = user.value.trim() ? 'Got it from Chrome.' : 'Got the password. Add your school email above, then sign in.';
+        if (user.value.trim()) go();
       } else if (c.kind === 'timeout') {
         note.className = 'msg';
         note.textContent = 'Stopped waiting for Chrome. Click From Chrome to try again.';
       }
     });
 
-    box.append(h('form', { class: 'acct-card setup', onsubmit: go },
-      h('h3', {}, 'Sign in to Canvas'),
-      h('p', {}, host),
-      state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, 'School email or username'), user),
-      state.canSaveLogin && h('div', { class: 'field' },
-        h('span', { class: 'field-head' }, 'Password', fromChrome), pass),
-      state.canSaveLogin && h('label', { class: 'check' }, remember,
-        h('span', {}, 'Sign me in automatically. Saved encrypted, for this Windows account only.')),
-      btn,
-      note,
-      h('div', { class: 'acct-actions' },
-        h('button', { type: 'button', class: 'link-btn', onclick: async () => { await P.setBase(''); state = await P.state(); renderAccount(); } }, 'Different school'),
-        state.savedUser && h('button', { type: 'button', class: 'link-btn', onclick: async () => { await P.forgetLogin(); state = await P.state(); renderAccount(); } }, 'Forget saved login'))));
-    return;
-  }
+    if (state.loggingIn) setTimeout(() => busy(true, 'Signing you back in…'));
 
-  box.append(h('div', { class: 'acct-card' },
-    h('div', { class: 'acct-row' },
-      h('div', { class: 'avatar' }, (state.who || '?').trim().charAt(0).toUpperCase()),
-      h('div', { style: 'min-width:0' },
-        h('div', { class: 'acct-name' }, state.who),
-        h('div', { class: 'acct-sub' }, host + (state.savedUser ? ' · signs in automatically' : '')))),
-    h('div', { class: 'acct-actions' },
-      h('button', { class: 'link-btn', onclick: () => P.open(state.base) }, 'Open Canvas'),
-      state.savedUser
-        ? h('button', { class: 'link-btn', onclick: async () => { await P.forgetLogin(); state = await P.state(); renderAccount(); } }, 'Forget saved login')
-        : null,
-      h('button', { class: 'link-btn', onclick: async () => { state = await P.signOut(); renderAccount(); renderUpcoming([]); } }, 'Sign out'))));
-}
+    return [
+      h('div', { class: 'kicker' }, state.school || new URL(state.base).host),
+      h('h2', { class: 'gate-title' }, 'Sign in to Canvas'),
+      h('p', { class: 'gate-sub' }, 'Just once. After that the portal keeps you signed in.'),
+      h('form', { class: 'gate-form', onsubmit: go },
+        state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, 'School email or username'), user),
+        state.canSaveLogin && h('div', { class: 'field' }, h('span', { class: 'field-head' }, 'Password', fromChrome), pass),
+        state.canSaveLogin && h('label', { class: 'check' }, remember,
+          h('span', {}, 'Keep me signed in. Saved encrypted, readable only by your Windows account.')),
+        btn,
+        note),
+      h('div', { class: 'gate-foot' },
+        h('button', { type: 'button', class: 'back-btn', onclick: async () => {
+          P.chromeStop();
+          await P.setBase('');
+          state = await P.state();
+          renderAccount();
+          showStep('school');
+        } }, icon(ICON_BACK), 'Different school'),
+        state.savedUser && h('button', { type: 'button', class: 'link-btn', onclick: async () => {
+          await P.forgetLogin();
+          state = await P.state();
+          user.value = '';
+          pass.placeholder = '';
+        } }, 'Forget saved login'))
+    ];
+  },
+
+  done() {
+    setTimeout(closeGate, 1300);
+    const first = (state.who || '').split(' ')[0];
+    return [
+      h('div', { class: 'done-mark', html: '<svg viewBox="0 0 52 52" width="64" height="64"><circle class="ring" cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="2"/><path class="tick" d="M15 27l7 7 15-16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' }),
+      h('h2', { class: 'gate-title center' }, first ? `You’re in, ${first}` : 'You’re in'),
+      h('p', { class: 'gate-sub center' }, 'Canvas is connected.')
+    ];
+  }
+};
 
 /* ── upcoming ── */
 let upcomingItems = [];
@@ -479,6 +594,7 @@ async function init() {
   }
   renderAccount();
   renderThread();
+  syncGate();
   scrollDown(true);
   loadUpcoming();
 
@@ -528,10 +644,16 @@ async function init() {
     if (e.clipboardData && e.clipboardData.files.length) { e.preventDefault(); addPending(await P.addFiles(e.clipboardData.files)); }
   });
 
-  P.onState(async s => { state = s; renderAccount(); if (s.who) loadUpcoming(); });
+  P.onState(async s => {
+    const had = !!state.who;
+    state = s;
+    renderAccount();
+    if (s.who && !had) loadUpcoming();
+    syncGate();
+  });
   P.onLoginStatus(text => {
-    const note = document.querySelector('#account .msg');
-    if (note) note.textContent = text;
+    const note = document.querySelector('.gate-step:not(.leaving) .msg');
+    if (note) { note.className = 'msg wait'; note.textContent = text; }
   });
 
   updateSend();

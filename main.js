@@ -186,6 +186,7 @@ function canvasLogin({ quiet = false } = {}) {
     loginWin.on('closed', () => { loginWin = null; finish({ ok: false, error: 'Sign-in window was closed' }); });
     loginWin.loadURL(base + '/login').catch(() => finish({ ok: false, error: 'Could not reach Canvas' }));
   });
+  sendUI('state:changed', publicState());
   return loginPromise;
 }
 
@@ -245,19 +246,21 @@ function publicState() {
   const c = readCfg();
   return {
     base: c.base || '',
+    school: c.school || (c.base ? new URL(c.base).host : ''),
     who: c.who || null,
     savedUser: (c.login && c.login.user) || null,
     canSaveLogin: safeStorage.isEncryptionAvailable(),
     claude: !!claudeExe,
     busy: !!turn,
+    loggingIn: !!loginPromise,
     sessionId: c.sessionId || null
   };
 }
 
 ipcMain.handle('state:get', () => publicState());
 
-ipcMain.handle('canvas:setBase', async (_e, raw) => {
-  if (!String(raw || '').trim()) { writeCfg({ base: null, who: null }); return { ok: true, base: null }; }
+ipcMain.handle('canvas:setBase', async (_e, raw, name) => {
+  if (!String(raw || '').trim()) { writeCfg({ base: null, who: null, school: null }); return { ok: true, base: null }; }
   let base;
   try {
     const s = String(raw || '').trim();
@@ -265,7 +268,7 @@ ipcMain.handle('canvas:setBase', async (_e, raw) => {
   } catch (e) { return { ok: false, error: 'That does not look like a web address' }; }
   if (!base.startsWith('https://')) return { ok: false, error: 'Canvas addresses start with https://' };
   if (!(await isCanvas(base))) return { ok: false, error: `${new URL(base).host} is not a Canvas site. Try searching for your school's name instead.` };
-  writeCfg({ base, who: null });
+  writeCfg({ base, who: null, school: name ? String(name).slice(0, 120) : new URL(base).host });
   return { ok: true, base };
 });
 
