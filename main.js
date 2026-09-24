@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, shell, safeStorage, clipboard, net } = require('electron');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { createCanvas, NeedsLogin } = require('./canvas');
@@ -14,7 +15,7 @@ const workDir = () => path.join(userData(), 'workspace');
 
 /* ── config ── */
 const cfgPath = () => path.join(userData(), 'config.json');
-function readCfg() { try { return JSON.parse(fs.readFileSync(cfgPath(), 'utf8')); } catch (e) { return {}; } }
+function readCfg() { try { return JSON.parse(fs.readFileSync(cfgPath(), 'utf8').replace(/^﻿/, '')); } catch (e) { return {}; } }
 function writeCfg(patch) {
   const next = { ...readCfg(), ...patch };
   fs.writeFileSync(cfgPath(), JSON.stringify(next, null, 1));
@@ -255,7 +256,7 @@ function publicState() {
 
 ipcMain.handle('state:get', () => publicState());
 
-ipcMain.handle('canvas:setBase', (_e, raw) => {
+ipcMain.handle('canvas:setBase', async (_e, raw) => {
   if (!String(raw || '').trim()) { writeCfg({ base: null, who: null }); return { ok: true, base: null }; }
   let base;
   try {
@@ -263,6 +264,7 @@ ipcMain.handle('canvas:setBase', (_e, raw) => {
     base = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s).origin;
   } catch (e) { return { ok: false, error: 'That does not look like a web address' }; }
   if (!base.startsWith('https://')) return { ok: false, error: 'Canvas addresses start with https://' };
+  if (!(await isCanvas(base))) return { ok: false, error: `${new URL(base).host} is not a Canvas site. Try searching for your school's name instead.` };
   writeCfg({ base, who: null });
   return { ok: true, base };
 });
@@ -274,6 +276,126 @@ ipcMain.handle('login:save', (_e, { user, pass }) => {
   return saveLogin(String(user).trim(), String(pass)) ? { ok: true } : { ok: false, error: 'This computer has no secure place to keep it' };
 });
 ipcMain.handle('login:forget', () => { writeCfg({ login: null }); return { ok: true }; });
+
+/* ── finding your school ──
+   The public directory the Canvas mobile app uses. It only matches whole
+   phrases ("texas austin" finds nothing), so each word is searched as well
+   and the results are ranked by how many of your words they contain. */
+const JUNK = /parent|observer|development|\bdev\b|\btest|sandbox|\bbeta\b|staff only|training/i;
+/* Sub-units share the school's name ("UT Austin ESL"); the main campus
+   should still come first. */
+const SUBUNIT = /\b(esl|cie|center|centre|program|precollege|continuing|extension|high school|k-?12|academy|uteach|school of|institute|alumni|library)\b| - /i;
+const ALIASES = {
+  ut: 'university of texas', uc: 'university of california', unc: 'university of north carolina',
+  uw: 'university of washington', umd: 'university of maryland', osu: 'ohio state', asu: 'arizona state',
+  psu: 'penn state', fsu: 'florida state', lsu: 'louisiana state', tamu: 'texas a&m', utd: 'ut dallas'
+};
+
+/* A Canvas site answers /api/v1/brand_variables with a redirect to its
+   theme file (or the JSON itself). Lookalikes do not: a missing
+   subdomain says 404, and canvas.utexas.edu redirects to a help page. */
+async function isCanvas(base) {
+  try {
+    /* Node's fetch, not net.fetch: only it shows where a redirect points. */
+    const res = await fetch(base + '/api/v1/brand_variables', { redirect: 'manual', signal: AbortSignal.timeout(8000) });
+    if (res.status >= 300 && res.status < 400) return /brandable_css|variables[^/]*\.json/i.test(res.headers.get('location') || '');
+    return res.ok && /json/i.test(res.headers.get('content-type') || '');
+  } catch (e) { return false; }
+}
+
+ipcMain.handle('schools:search', async (_e, raw) => {
+  const q = String(raw || '').trim();
+  if (q.length < 2) return [];
+  const expanded = q.toLowerCase().split(/\s+/).map(w => ALIASES[w] || w).join(' ');
+  const words = expanded.split(/[^a-z0-9&]+/).filter(w => w.length >= 2 && !['of', 'the', 'at', 'and'].includes(w));
+  const queries = [...new Set([q, expanded, ...words.filter(w => w.length >= 3).sort((a, b) => b.length - a.length).slice(0, 3)])];
+  const found = new Map();
+  const add = (name, domain, score) => {
+    const prev = found.get(domain.toLowerCase());
+    if (!prev || prev.score < score) found.set(domain.toLowerCase(), { name, domain, score });
+  };
+  const probe = /^[a-z0-9-]{2,30}$/i.test(q)
+    ? isCanvas('https://' + q.toLowerCase() + '.instructure.com').then(ok => { if (ok) add('Canvas at ' + q.toLowerCase(), q.toLowerCase() + '.instructure.com', 40); })
+    : null;
+  await Promise.all([probe, ...queries.map(async term => {
+    try {
+      const res = await net.fetch('https://canvas.instructure.com/api/v1/accounts/search?per_page=100&name=' + encodeURIComponent(term),
+        { signal: AbortSignal.timeout(8000) });
+      for (const x of await res.json()) if (x && x.domain) {
+        const name = String(x.name || x.domain), low = name.toLowerCase(), dom = x.domain.toLowerCase();
+        let score = words.filter(w => low.includes(w)).length * 10 + words.filter(w => dom.includes(w)).length * 3;
+        if (low.startsWith(expanded)) score += 6;
+        if (JUNK.test(name)) score -= 15;
+        if (SUBUNIT.test(name)) score -= 8;
+        else if (/universit|college/i.test(name)) score += 4;
+        add(name, x.domain, score);
+      }
+    } catch (e) {}
+  })]);
+  return [...found.values()]
+    .filter(r => r.score > 0 || words.length <= 1)
+    .sort((a, b) => b.score - a.score || a.name.length - b.name.length)
+    .slice(0, 8);
+});
+
+/* ── password from Chrome ──
+   Chrome keeps its passwords locked to Chrome, and that is how it should be.
+   What it does offer is a copy button, so the portal opens Chrome's password
+   page already searched for the school and watches the clipboard: the first
+   thing that looks like an email fills the username, anything else fills the
+   password, and the clipboard is wiped right after. */
+const CHROME_PATHS = [
+  path.join(process.env.PROGRAMFILES || 'C:\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env['PROGRAMFILES(X86)'] || 'C:\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe')
+];
+let clipWatch = null;
+function stopClipWatch() { if (clipWatch) { clearInterval(clipWatch.timer); clipWatch = null; } }
+
+/* canvas.rice.edu → "rice", utexas.instructure.com → "utexas": that is also
+   what the school email ends in, which Chrome's search matches on. */
+function schoolWord(base) {
+  try {
+    const parts = new URL(base).hostname.split('.');
+    if (parts.slice(-2).join('.') === 'instructure.com') return parts[0];
+    return parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  } catch (e) { return ''; }
+}
+
+ipcMain.handle('chrome:passwords', (_e, { haveUser }) => {
+  const exe = CHROME_PATHS.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } });
+  if (!exe) return { ok: false, error: 'Chrome is not installed here' };
+  const term = schoolWord(readCfg().base);
+  try {
+    spawn(exe, ['chrome://password-manager/passwords' + (term ? '?q=' + encodeURIComponent(term) : '')],
+      { detached: true, stdio: 'ignore' }).unref();
+  } catch (e) { return { ok: false, error: 'Could not open Chrome' }; }
+
+  stopClipWatch();
+  let last = clipboard.readText();
+  let wantUser = !haveUser;
+  clipWatch = {
+    started: Date.now(),
+    timer: setInterval(() => {
+      if (Date.now() - clipWatch.started > 4 * 60e3) { stopClipWatch(); return sendUI('chrome:captured', { kind: 'timeout' }); }
+      const now = clipboard.readText();
+      if (now === last) return;
+      last = now;
+      const v = now;
+      if (!v.trim() || v.length > 256 || /[\r\n]/.test(v)) return;
+      if (wantUser && /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v)) {
+        wantUser = false;
+        return sendUI('chrome:captured', { kind: 'user', value: v });
+      }
+      sendUI('chrome:captured', { kind: 'pass', value: v });
+      if (clipboard.readText() === now) clipboard.clear();
+      stopClipWatch();
+      if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+    }, 500)
+  };
+  return { ok: true, term };
+});
+ipcMain.handle('chrome:stop', () => { stopClipWatch(); return true; });
 
 ipcMain.handle('canvas:signout', async () => {
   await session.fromPartition(PARTITION).clearStorageData();

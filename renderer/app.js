@@ -52,20 +52,53 @@ function renderAccount(msg) {
   box.replaceChildren();
 
   if (!state.base) {
-    const input = h('input', { placeholder: 'yourschool.instructure.com', spellcheck: 'false' });
+    const input = h('input', { placeholder: 'e.g. Rice University', spellcheck: 'false', autocomplete: 'off' });
+    const results = h('div', { class: 'schools' });
     const note = h('div', { class: 'msg' + (msg && msg.err ? ' err' : '') }, msg ? msg.text : '');
-    const go = async e => {
-      e.preventDefault();
-      const r = await P.setBase(input.value);
+    const pick = async domain => {
+      const r = await P.setBase(domain);
       if (!r.ok) return renderAccount({ err: true, text: r.error });
       state = await P.state();
       renderAccount();
     };
-    box.append(h('form', { class: 'acct-card setup', onsubmit: go },
-      h('h3', {}, 'Connect Canvas'),
-      h('p', {}, 'The address you use to open Canvas in your browser.'),
-      h('label', { class: 'field' }, h('span', {}, 'Canvas address'), input),
-      h('button', { class: 'btn wide' }, 'Continue'),
+    const looksLikeAddress = v => /\.[a-z]{2,}(\/|$)/i.test(v.trim()) && !/\s/.test(v.trim());
+
+    let seq = 0, timer = 0, top = null;
+    const search = () => {
+      clearTimeout(timer);
+      const v = input.value.trim();
+      timer = setTimeout(async () => {
+        const mine = ++seq;
+        results.replaceChildren();
+        top = null;
+        if (looksLikeAddress(v)) {
+          top = v;
+          results.append(h('button', { type: 'button', class: 'school', onclick: () => pick(v) },
+            h('div', { class: 'school-name' }, 'Use this address'), h('div', { class: 'school-dom' }, v)));
+          return;
+        }
+        if (v.length < 2) return;
+        results.append(h('div', { class: 'schools-note' }, 'Searching…'));
+        const list = await P.searchSchools(v);
+        if (mine !== seq) return;
+        results.replaceChildren();
+        if (!list.length) {
+          results.append(h('div', { class: 'schools-note' },
+            'No match. Try your school’s full name, or type the address you open Canvas at.'));
+          return;
+        }
+        top = list[0].domain;
+        for (const s of list) results.append(h('button', { type: 'button', class: 'school', onclick: () => pick(s.domain) },
+          h('div', { class: 'school-name' }, s.name), h('div', { class: 'school-dom' }, s.domain)));
+      }, looksLikeAddress(v) ? 0 : 280);
+    };
+    input.addEventListener('input', search);
+
+    box.append(h('form', { class: 'acct-card setup', onsubmit: e => { e.preventDefault(); if (top) pick(top); } },
+      h('h3', {}, 'Find your school'),
+      h('p', {}, 'Search by name, or type the Canvas address if you know it.'),
+      h('label', { class: 'field' }, h('span', {}, 'School'), input),
+      results,
       note));
     setTimeout(() => input.focus());
     return;
@@ -82,6 +115,7 @@ function renderAccount(msg) {
 
     const go = async e => {
       e.preventDefault();
+      P.chromeStop();
       if (remember.checked && user.value && pass.value) {
         const r = await P.saveLogin(user.value, pass.value);
         if (!r.ok) { note.className = 'msg err'; note.textContent = r.error; return; }
@@ -98,11 +132,42 @@ function renderAccount(msg) {
       else renderAccount({ err: true, text: r.error });
     };
 
+    /* Chrome's copy button → clipboard → here. Main watches the clipboard
+       while Chrome's password page is open, and wipes it once it has it. */
+    const fromChrome = h('button', { type: 'button', class: 'chrome-btn', title: "Copy it from Chrome's saved passwords" },
+      h('span', { class: 'ico', html: '<svg viewBox="0 0 20 20" width="14" height="14"><circle cx="7" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.2 10H17m-2.5 0v2.6M17 10v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' }),
+      'From Chrome');
+    fromChrome.addEventListener('click', async () => {
+      const r = await P.chromePasswords(!!user.value.trim());
+      note.className = 'msg' + (r.ok ? ' wait' : ' err');
+      note.textContent = r.ok
+        ? `Chrome's passwords are open${r.term ? ` and searched for “${r.term}”` : ''}. Click the copy button next to your school password. It comes in here by itself.`
+        : r.error;
+    });
+    const stopCapture = P.onChromeCaptured(c => {
+      if (!document.body.contains(pass)) return stopCapture();
+      if (c.kind === 'user') {
+        user.value = c.value;
+        note.className = 'msg wait';
+        note.textContent = 'Got your username. Now copy the password.';
+      } else if (c.kind === 'pass') {
+        pass.value = c.value;
+        remember.checked = true;
+        note.className = 'msg ok';
+        note.textContent = user.value.trim() ? 'Got it from Chrome. Signing in…' : 'Got the password. Type your school email above, then Sign in.';
+        if (user.value.trim()) btn.click();
+      } else if (c.kind === 'timeout') {
+        note.className = 'msg';
+        note.textContent = 'Stopped waiting for Chrome. Click From Chrome to try again.';
+      }
+    });
+
     box.append(h('form', { class: 'acct-card setup', onsubmit: go },
       h('h3', {}, 'Sign in to Canvas'),
       h('p', {}, host),
       state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, 'School email or username'), user),
-      state.canSaveLogin && h('label', { class: 'field' }, h('span', {}, 'Password'), pass),
+      state.canSaveLogin && h('div', { class: 'field' },
+        h('span', { class: 'field-head' }, 'Password', fromChrome), pass),
       state.canSaveLogin && h('label', { class: 'check' }, remember,
         h('span', {}, 'Sign me in automatically. Saved encrypted, for this Windows account only.')),
       btn,

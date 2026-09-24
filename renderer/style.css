@@ -313,3 +313,26 @@ a { color: var(--accent); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+
+/* ── school search + Chrome password ── */
+.schools { display: grid; gap: 2px; margin: -2px -6px 2px; max-height: 300px; overflow-y: auto; }
+.school {
+  text-align: left; border: 0; background: transparent;
+  padding: 7px 8px; border-radius: 8px;
+}
+.school:hover, .school:focus-visible { background: var(--bg); outline: none; }
+.school:first-child { background: var(--bg); }
+.school-name { font-size: 13.5px; line-height: 1.3; font-weight: 550; }
+.school-dom { font-size: 12px; color: var(--muted); }
+.schools-note { font-size: 12.5px; color: var(--faint); padding: 4px 8px; }
+.field-head { display: flex !important; align-items: center; justify-content: space-between; }
+.chrome-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--line-strong); background: var(--bg);
+  border-radius: 99px; padding: 1px 9px 1px 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--text);
+}
+.chrome-btn:hover { border-color: var(--accent); color: var(--accent); }
+.field .ico { display: inline-grid; margin: 0; }
+.msg.wait { color: var(--text); background: var(--bg); padding: 8px 10px; border-radius: 8px; }
+.msg.ok { color: var(--ok); }
