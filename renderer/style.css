@@ -586,3 +586,8 @@ body:has(.gate.open) .side, body:has(.gate.open) .main { transform: scale(.985);
 .model-opt.on i { opacity: 1; }
 
 .md td:first-child, .md th:first-child { white-space: nowrap; }
+
+/* hovering previews the tick at nearly full size, not the 40% resting state */
+.tick { width: 20px; height: 20px; margin-top: 4px; }
+.tick .ico svg { width: 13px; height: 13px; }
+.tick:hover:not(:disabled) .ico { transform: scale(.9); }
