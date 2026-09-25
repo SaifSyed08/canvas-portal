@@ -364,9 +364,9 @@ a { color: var(--accent); }
 /* ── typography ── */
 .brand { font-family: var(--serif); font-weight: 400; font-size: 21px; letter-spacing: 0; }
 .empty h1 { font-family: var(--serif); font-weight: 400; font-size: 46px; letter-spacing: -.01em; line-height: 1.1; margin-bottom: 10px; }
-.card-title { font-family: var(--serif); font-weight: 400; font-size: 22px; letter-spacing: 0; }
-.md h2, .md h3 { font-family: var(--serif); font-weight: 400; letter-spacing: 0; }
-.md h2 { font-size: 24px; } .md h3 { font-size: 20px; }
+.card-title { font-weight: 620; font-size: 17px; letter-spacing: -.01em; }
+.md h2, .md h3, .md h4, .md h5 { font-family: inherit; font-weight: 620; letter-spacing: -.01em; }
+.md h2 { font-size: 17px; margin-top: 1.4em; } .md h3 { font-size: 15.5px; } .md h4, .md h5 { font-size: 14.5px; }
 .acct-name { font-weight: 560; }
 .side-head { font-weight: 560; letter-spacing: .08em; }
 
