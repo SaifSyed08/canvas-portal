@@ -8,6 +8,7 @@ const on = channel => fn => {
 
 contextBridge.exposeInMainWorld('portal', {
   state: () => ipcRenderer.invoke('state:get'),
+  setModel: id => ipcRenderer.invoke('model:set', id),
   setBase: (base, name) => ipcRenderer.invoke('canvas:setBase', base, name),
   login: () => ipcRenderer.invoke('canvas:login'),
   signOut: () => ipcRenderer.invoke('canvas:signout'),

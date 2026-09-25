@@ -66,7 +66,6 @@ function renderAccount() {
         h('div', { class: 'acct-name' }, state.who),
         h('div', { class: 'acct-sub' }, state.school || host))),
     h('div', { class: 'acct-actions' },
-      h('button', { class: 'link-btn', onclick: () => P.open(state.base) }, 'Open Canvas'),
       state.savedUser
         ? h('button', { class: 'link-btn', onclick: async () => { await P.forgetLogin(); state = await P.state(); renderAccount(); } }, 'Forget saved login')
         : null,
@@ -79,6 +78,7 @@ function renderAccount() {
    once Canvas answers. */
 let gate = null;
 let gateDismissed = false;
+let userSigningIn = false;   // the "You're in" moment is only for sign-ins he started
 const STEPS = ['school', 'signin', 'done'];
 
 function gateStep() { return !state.base ? 'school' : !state.who ? 'signin' : null; }
@@ -86,7 +86,7 @@ function gateStep() { return !state.base ? 'school' : !state.who ? 'signin' : nu
 function syncGate() {
   const step = gateStep();
   if (step && !gateDismissed) openGate(step);
-  else if (!step && gate && gate.step !== 'done') showStep('done');
+  else if (!step && gate && gate.step !== 'done' && !userSigningIn) closeGate();
 }
 
 const icon = svg => h('span', { class: 'ico', html: svg });
@@ -240,7 +240,9 @@ const BUILD = {
       busy(true, (remember.checked && (pass.value || state.savedUser))
         ? 'Signing in with your details. If your school asks for a code or a phone approval, a window will open for it.'
         : 'Finish signing in in the window that opened.');
+      userSigningIn = true;
       const r = await P.login();
+      userSigningIn = false;
       state = await P.state();
       renderAccount();
       if (r.ok) { loadUpcoming(); showStep('done'); }
@@ -673,8 +675,40 @@ function ask(text) {
   t.setSelectionRange(t.value.length, t.value.length);
 }
 
+/* ── model picker ── */
+const MODELS = [
+  { id: 'sonnet', name: 'Sonnet', note: 'Fast and sharp. Best for most things.' },
+  { id: 'opus', name: 'Opus', note: 'Deepest thinking. Slower, for hard problems.' },
+  { id: 'haiku', name: 'Haiku', note: 'Quickest, for simple lookups.' }
+];
+function paintModel() {
+  const cur = MODELS.find(m => m.id === state.model) || MODELS[0];
+  $('#model-name').textContent = cur.name;
+  $('#model-menu').replaceChildren(...MODELS.map(m => {
+    const b = h('button', { type: 'button', class: 'model-opt' + (m.id === cur.id ? ' on' : ''), role: 'menuitemradio', 'aria-checked': String(m.id === cur.id) },
+      h('b', {}, m.name), h('span', {}, m.note), h('i', { html: '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 10.5l3.2 3.2L15 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' }));
+    b.addEventListener('click', async () => {
+      state = await P.setModel(m.id);
+      paintModel();
+      toggleModelMenu(false);
+      $('#input').focus();
+    });
+    return b;
+  }));
+}
+function toggleModelMenu(open) {
+  const menu = $('#model-menu'), btn = $('#model-btn');
+  const want = open == null ? !menu.classList.contains('open') : open;
+  menu.classList.toggle('open', want);
+  btn.setAttribute('aria-expanded', String(want));
+}
+
 async function init() {
   state = await P.state();
+  paintModel();
+  $('#model-btn').addEventListener('click', e => { e.stopPropagation(); toggleModelMenu(); });
+  document.addEventListener('click', e => { if (!e.target.closest('.model-pick')) toggleModelMenu(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleModelMenu(false); });
   load();
   for (const item of thread) {
     if (item.live) { item.live = false; (item.parts = item.parts || []).push({ kind: 'error', text: 'Interrupted.' }); }

@@ -8,6 +8,8 @@ const { startMcp } = require('./mcp');
 const { findClaude, runTurn } = require('./claude');
 
 if (!app.requestSingleInstanceLock()) app.quit();
+/* Its own taskbar identity, so Windows shows this icon and not Electron's. */
+if (process.platform === 'win32') app.setAppUserModelId('com.saif.canvasportal');
 
 let win = null;
 const userData = () => app.getPath('userData');
@@ -140,6 +142,7 @@ function canvasLogin({ quiet = false } = {}) {
     loginWin = new BrowserWindow({
       width: 1000, height: 780,
       title: 'Sign in to Canvas',
+      icon: path.join(__dirname, 'build', 'icon.ico'),
       parent: win || undefined,
       show: !(quiet && creds),
       autoHideMenuBar: true,
@@ -238,10 +241,12 @@ async function withLogin(fn) {
   try { return await fn(); }
   catch (e) {
     if (!(e instanceof NeedsLogin)) throw e;
-    writeCfg({ who: null });
-    sendUI('state:changed', publicState());
     const r = await canvasLogin({ quiet: true });
-    if (!r.ok) throw e;
+    if (!r.ok) {
+      writeCfg({ who: null });
+      sendUI('state:changed', publicState());
+      throw e;
+    }
     return fn();
   }
 }
@@ -270,7 +275,7 @@ function systemPrompt() {
 - Handing in: only when Saif asks you to submit or turn something in, call propose_submission. It does NOT submit. It shows him a confirmation card, and nothing reaches Canvas until he clicks Submit. Match the assignment by course, name, and due date. If more than one could fit, ask which one instead of picking. If the file type isn't accepted, say so rather than proposing.
 - Messages starting with "(Portal note:" come from the app, not from Saif. They report what happened to a confirmation card.
 - The chat renders Markdown. Keep answers easy to skim.
-- You run on Claude Sonnet, which the portal picks. The portal has no settings screen, so never send Saif to "settings". If he wants the app changed, say it's a change to the app itself.`;
+- Saif picks the model (Sonnet, Opus or Haiku) from the menu next to the message box, and can switch any time. The portal has no settings screen, so never send him to "settings". If he wants the app changed, say it's a change to the app itself.`;
 }
 
 async function bootMcp() {
@@ -303,11 +308,16 @@ function publicState() {
     claude: !!claudeExe,
     busy: !!turn,
     loggingIn: !!loginPromise,
+    model: c.model || 'sonnet',
     sessionId: c.sessionId || null
   };
 }
 
 ipcMain.handle('state:get', () => publicState());
+ipcMain.handle('model:set', (_e, id) => {
+  if (['sonnet', 'opus', 'haiku'].includes(id)) writeCfg({ model: id });
+  return publicState();
+});
 ipcMain.handle('mcp:url', () => mcpUrl);
 
 ipcMain.handle('canvas:setBase', async (_e, raw, name) => {
@@ -609,6 +619,7 @@ function createWindow() {
     width: b.width || 1180, height: b.height || 820, x: b.x, y: b.y,
     minWidth: 720, minHeight: 520,
     title: 'Canvas Portal',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     autoHideMenuBar: true,
     backgroundColor: '#f7f6f3',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
