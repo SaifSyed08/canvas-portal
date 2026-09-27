@@ -128,6 +128,36 @@ async function keepSession(base) {
   } catch (e) {}
 }
 
+/* keepSession alone never stuck: Canvas re-issues its session cookies on
+   nearly every response, each time without an expiry, so by the time the
+   app closed the 30-day copies were gone and every launch signed in again
+   (quietly, thanks to the saved password and Duo's remembered device, but
+   it raced the first Canvas calls). Each re-issue now gets the same 30 days.
+   Removals are left alone, so signing out still signs out. */
+let holding = false;
+function holdSession() {
+  if (holding) return;
+  holding = true;
+  const s = canvasSession();
+  let flush = null;
+  s.cookies.on('changed', (_e, c, _cause, removed) => {
+    const base = readCfg().base;
+    if (removed || !c.session || !base) return;
+    const host = new URL(base).hostname;
+    const dom = String(c.domain || '').replace(/^\./, '');
+    if (!dom || !(host === dom || host.endsWith('.' + dom))) return;
+    s.cookies.set({
+      url: 'https://' + dom + (c.path || '/'),
+      name: c.name, value: c.value,
+      domain: c.hostOnly ? undefined : c.domain,
+      path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+      sameSite: c.sameSite, expirationDate: Math.floor(Date.now() / 1000) + 30 * 86400
+    }).catch(() => {});
+    clearTimeout(flush);
+    flush = setTimeout(() => s.cookies.flushStore().catch(() => {}), 2000);
+  });
+}
+
 /* One sign-in window at a time. `quiet` keeps it hidden while saved details
    do the work, and only shows it if something needs Saif — usually a Duo or
    Authenticator prompt — or if it stalls. */
@@ -645,6 +675,7 @@ function createWindow() {
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(async () => {
+  holdSession();
   await bootMcp();
   createWindow();
   /* A kept session means no sign-in at all: ask Canvas who this is. */
