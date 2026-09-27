@@ -286,6 +286,133 @@ function createTools({ canvas, workDir, onProposal }) {
     return out;
   }
 
+  /* ── tabs ── */
+
+  /* Which tool reads a tab. Home depends on what the course set as its home
+     page; external tools (Ed aside) can only be rendered. */
+  function readerFor(tab, homeView) {
+    const BY_ID = {
+      announcements: 'list_announcements', assignments: 'list_assignments, then get_assignment',
+      discussions: 'list_discussions, then get_discussion', grades: 'get_grades', people: 'list_people',
+      pages: 'list_pages, then get_page', files: 'list_files, then get_file', syllabus: 'get_syllabus',
+      quizzes: 'list_quizzes', modules: 'list_modules'
+    };
+    const HOME = {
+      wiki: 'get_page with page_url "front_page"', modules: 'list_modules', assignments: 'list_assignments',
+      syllabus: 'get_syllabus', feed: 'open_tab'
+    };
+    if (tab.id === 'home') return HOME[homeView] || 'open_tab';
+    if (tab.type === 'external') return /\bed\b|edstem/i.test(tab.label) ? 'ed_threads, then ed_thread' : 'open_tab';
+    return BY_ID[tab.id] || 'open_tab';
+  }
+
+  /* /view is the whole threaded discussion in one go. Canvas builds it in the
+     background and says 503 until it is ready, and it is 403 when the topic
+     wants Saif's own post first. */
+  async function discussion(courseId, topicId) {
+    const t = await canvas.get(`/api/v1/courses/${courseId}/discussion_topics/${topicId}`);
+    const out = {
+      title: t.title, author: t.author && t.author.display_name || t.user_name, posted_at: t.posted_at,
+      due_at: (t.assignment && t.assignment.due_at) || undefined,
+      prompt: clip(htmlToText(t.message), 8000),
+      linked_file_ids: fileIdsIn(t.message),
+      attachments: (t.attachments || []).map(a => ({ file_id: a.id, name: a.display_name })),
+      url: t.html_url
+    };
+    let view = null;
+    for (let i = 0; i < 3 && !view; i++) {
+      try { view = await canvas.get(`/api/v1/courses/${courseId}/discussion_topics/${topicId}/view?include_new_entries=1`); }
+      catch (e) {
+        if (/503/.test(e.message) && i < 2) { await new Promise(r => setTimeout(r, 1500)); continue; }
+        if (/403|initial_post|must post/i.test(e.message)) { out.replies = 'Hidden until Saif posts his own reply (the topic is set up that way).'; return out; }
+        throw e;
+      }
+    }
+    const who = new Map((view.participants || []).map(p => [p.id, p.display_name]));
+    const entries = [...(view.view || []), ...(view.new_entries || [])];
+    const lines = [];
+    let budget = MAX_TEXT;
+    const walk = (list, depth) => {
+      for (const e of list || []) {
+        if (budget <= 0) return;
+        const pad = '  '.repeat(depth);
+        const body = e.deleted ? '(deleted)' : htmlToText(e.message).replace(/\n+/g, '\n' + pad + '  ');
+        const line = `${pad}- ${who.get(e.user_id) || 'Someone'} (${(e.created_at || '').slice(0, 10)}): ${body}`;
+        lines.push(line);
+        budget -= line.length;
+        for (const f of fileIdsIn(e.message)) out.linked_file_ids.push(f);
+        walk(e.replies, depth + 1);
+      }
+    };
+    walk(entries, 0);
+    out.reply_count = lines.length;
+    out.replies = lines.join('\n') + (budget <= 0 ? '\n…(more replies cut off)' : '') || '(no replies yet)';
+    out.linked_file_ids = [...new Set(out.linked_file_ids)];
+    return out;
+  }
+
+  /* Plenty of courses switch the Files tab off and post files through
+     modules instead; those files still open by id. */
+  async function files({ course_id, search, folder }) {
+    try {
+      const q = search && search.trim().length >= 2 ? '&search_term=' + encodeURIComponent(search.trim()) : '';
+      const [list, folders] = await Promise.all([
+        canvas.getAll(`/api/v1/courses/${course_id}/files?per_page=100&sort=updated_at&order=desc${q}`, 1000),
+        canvas.getAll(`/api/v1/courses/${course_id}/folders?per_page=100`, 1000).catch(() => [])
+      ]);
+      const where = new Map(folders.map(f => [f.id, String(f.full_name || f.name || '').replace(/^course files\/?/, '') || '(top)']));
+      let out = list.map(f => ({
+        file_id: f.id, name: f.display_name, folder: where.get(f.folder_id) || undefined,
+        size_kb: Math.round((f.size || 0) / 1024), updated_at: f.updated_at,
+        locked: f.locked_for_user || undefined
+      }));
+      if (folder) out = out.filter(f => String(f.folder || '').toLowerCase().includes(folder.toLowerCase()));
+      return out.length > 250
+        ? { note: `${out.length} files; showing the 250 newest. Narrow it with search or folder.`, files: out.slice(0, 250) }
+        : out;
+    } catch (e) {
+      if (e.code !== 'forbidden' && !/40[34]/.test(e.message)) throw e;
+      const mods = await canvas.getAll(`/api/v1/courses/${course_id}/modules?include[]=items&per_page=50`);
+      let out = [];
+      for (const m of mods) for (const i of m.items || [])
+        if (i.type === 'File') out.push({ file_id: i.content_id, name: i.title, module: m.name });
+      if (search) out = out.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+      if (folder) out = out.filter(f => f.module.toLowerCase().includes(folder.toLowerCase()));
+      return { note: 'This course hides its Files tab from students, so these are the files posted in its modules.', files: out };
+    }
+  }
+
+  async function grades({ course_id }) {
+    const [course, enr, groups] = await Promise.all([
+      canvas.get(`/api/v1/courses/${course_id}`),
+      canvas.getAll(`/api/v1/courses/${course_id}/enrollments?user_id=self&type[]=StudentEnrollment&per_page=10`).catch(() => []),
+      canvas.getAll(`/api/v1/courses/${course_id}/assignment_groups?include[]=assignments&include[]=submission&per_page=50`)
+    ]);
+    const g = (enr[0] && enr[0].grades) || {};
+    const weighted = !!course.apply_assignment_group_weights;
+    return {
+      course: course.name,
+      current_score: g.current_score != null ? g.current_score : null,
+      current_grade: g.current_grade || null,
+      note: g.current_score == null ? 'Canvas is not showing a course total for this class (the instructor may hide it).' : undefined,
+      weighted_by_group: weighted,
+      groups: groups.map(gr => ({
+        group: gr.name,
+        weight_percent: weighted ? gr.group_weight : undefined,
+        drop_lowest: gr.rules && gr.rules.drop_lowest || undefined,
+        assignments: (gr.assignments || []).map(a => {
+          const s = a.submission || {};
+          return {
+            name: a.name, assignment_id: a.id, due_at: a.due_at, points: a.points_possible,
+            score: s.score != null ? s.score : null, grade: s.grade || undefined,
+            missing: s.missing || undefined, late: s.late || undefined, excused: s.excused || undefined,
+            submitted: !!s.submitted_at, not_counted: a.omit_from_final_grade || undefined
+          };
+        })
+      }))
+    };
+  }
+
   const dismissProposal = id => { const c = proposals.get(id); proposals.delete(id); return c; };
   const hasProposal = id => proposals.has(id);
 
@@ -382,18 +509,166 @@ function createTools({ canvas, workDir, onProposal }) {
             title: i.title, type: i.type,
             file_id: i.type === 'File' ? i.content_id : undefined,
             assignment_id: i.type === 'Assignment' ? i.content_id : undefined,
-            page_url: i.page_url, external_url: i.external_url
+            discussion_id: i.type === 'Discussion' ? i.content_id : undefined,
+            quiz_id: i.type === 'Quiz' ? i.content_id : undefined,
+            page_url: i.page_url, external_url: i.external_url,
+            /* an external tool item (a video, Gradescope) has nothing to read
+               through the API; open_canvas_page can render it */
+            open_url: i.type === 'ExternalTool' ? i.html_url : undefined
           }))
         }));
       }
     },
     {
       name: 'get_page',
-      description: 'Read a course page by its page_url (from list_modules).',
+      description: 'Read a course page by its page_url (from list_pages or list_modules). Use page_url "front_page" for the course home page.',
       inputSchema: obj({ course_id: id, page_url: { type: 'string' } }, ['course_id', 'page_url']),
       run: async ({ course_id, page_url }) => {
-        const p = await canvas.get(`/api/v1/courses/${course_id}/pages/${encodeURIComponent(page_url)}`);
-        return { title: p.title, body: clip(htmlToText(p.body)), linked_file_ids: fileIdsIn(p.body) };
+        const p = await canvas.get(page_url === 'front_page'
+          ? `/api/v1/courses/${course_id}/front_page`
+          : `/api/v1/courses/${course_id}/pages/${encodeURIComponent(page_url)}`);
+        return { title: p.title, body: clip(htmlToText(p.body)), linked_file_ids: fileIdsIn(p.body), updated_at: p.updated_at };
+      }
+    },
+    {
+      name: 'list_tabs',
+      description: "The tabs in a course's left-hand menu on Canvas (Home, Discussions, Files, Grades, Ed Discussion, Gradescope…) and which tool reads each one. Start here when Saif asks about a part of a course that isn't an assignment.",
+      inputSchema: obj({ course_id: id }, ['course_id']),
+      run: async ({ course_id }) => {
+        const [tabs, course] = await Promise.all([
+          canvas.getAll(`/api/v1/courses/${course_id}/tabs?per_page=100`),
+          canvas.get(`/api/v1/courses/${course_id}`).catch(() => ({}))
+        ]);
+        return tabs.map(t => ({ tab: t.id, label: t.label, external: t.type === 'external', read_with: readerFor(t, course.default_view) }));
+      }
+    },
+    {
+      name: 'list_discussions',
+      description: "A course's Discussions tab (Canvas discussions, not Ed): topics with reply and unread counts, due dates for graded ones, and whether Saif has to post before he can see replies.",
+      inputSchema: obj({
+        course_id: id,
+        search: { type: 'string', description: 'Optional words to look for in titles' }
+      }, ['course_id']),
+      run: async ({ course_id, search }) => {
+        const q = search ? '&search_term=' + encodeURIComponent(search) : '';
+        const list = await canvas.getAll(`/api/v1/courses/${course_id}/discussion_topics?per_page=100&order_by=recent_activity${q}`, 200);
+        return list.map(t => ({
+          id: t.id, title: t.title,
+          author: t.author && t.author.display_name || t.user_name,
+          posted_at: t.posted_at, last_reply_at: t.last_reply_at,
+          replies: t.discussion_subentry_count, unread: t.unread_count,
+          graded: !!t.assignment_id, assignment_id: t.assignment_id || undefined,
+          due_at: (t.assignment && t.assignment.due_at) || t.todo_date || undefined,
+          must_post_first: !!t.require_initial_post || undefined,
+          locked: t.locked_for_user || undefined, pinned: t.pinned || undefined,
+          preview: clip(htmlToText(t.message), 300)
+        }));
+      }
+    },
+    {
+      name: 'get_discussion',
+      description: 'Read one Canvas discussion: the prompt and every reply, threaded, with who wrote what and when. Lists the ids of any files it links to or has attached.',
+      inputSchema: obj({ course_id: id, discussion_id: id }, ['course_id', 'discussion_id']),
+      run: ({ course_id, discussion_id }) => discussion(course_id, discussion_id)
+    },
+    {
+      name: 'list_files',
+      description: "A course's Files tab: every file with its folder, size and date, newest first. If the course hides its Files tab, this falls back to the files posted in modules. get_file opens any of them.",
+      inputSchema: obj({
+        course_id: id,
+        search: { type: 'string', description: 'Optional part of a file name (2+ letters)' },
+        folder: { type: 'string', description: 'Optional part of a folder name, e.g. "Lecture"' }
+      }, ['course_id']),
+      run: files
+    },
+    {
+      name: 'list_pages',
+      description: "A course's Pages tab: every page with its page_url, newest first. Read one with get_page.",
+      inputSchema: obj({
+        course_id: id,
+        search: { type: 'string', description: 'Optional words to look for in titles' }
+      }, ['course_id']),
+      run: async ({ course_id, search }) => {
+        const q = search ? '&search_term=' + encodeURIComponent(search) : '';
+        const list = await canvas.getAll(`/api/v1/courses/${course_id}/pages?per_page=100&sort=updated_at&order=desc${q}`, 300);
+        return list.map(p => ({ title: p.title, page_url: p.url, updated_at: p.updated_at, home_page: p.front_page || undefined }));
+      }
+    },
+    {
+      name: 'get_grades',
+      description: "A course's Grades tab: Saif's current overall grade, each assignment group with its weight, and every assignment's score, with missing, late and excused flags.",
+      inputSchema: obj({ course_id: id }, ['course_id']),
+      run: grades
+    },
+    {
+      name: 'list_quizzes',
+      description: "A course's Quizzes tab (classic Canvas quizzes): due and lock dates, time limit, attempts, question count, and the instructions. New Quizzes show up in list_assignments instead.",
+      inputSchema: obj({ course_id: id }, ['course_id']),
+      run: async ({ course_id }) => {
+        const list = await canvas.getAll(`/api/v1/courses/${course_id}/quizzes?per_page=100`, 200);
+        return list.map(z => ({
+          id: z.id, title: z.title, type: z.quiz_type, assignment_id: z.assignment_id || undefined,
+          due_at: z.due_at, unlock_at: z.unlock_at, lock_at: z.lock_at,
+          time_limit_minutes: z.time_limit, allowed_attempts: z.allowed_attempts,
+          questions: z.question_count, points: z.points_possible,
+          locked: z.locked_for_user || undefined,
+          lock_explanation: z.locked_for_user ? htmlToText(z.lock_explanation) : undefined,
+          instructions: clip(htmlToText(z.description), 800) || undefined
+        }));
+      }
+    },
+    {
+      name: 'list_people',
+      description: "A course's People tab. By default the instructors and TAs (to find who teaches it or whom to ask); pass role \"student\" with a search to find a classmate.",
+      inputSchema: obj({
+        course_id: id,
+        role: { type: 'string', enum: ['staff', 'student', 'all'], description: 'Default staff (teachers and TAs)' },
+        search: { type: 'string', description: 'Optional part of a name' }
+      }, ['course_id']),
+      run: async ({ course_id, role = 'staff', search }) => {
+        const types = { staff: ['teacher', 'ta'], student: ['student'], all: [] }[role] || ['teacher', 'ta'];
+        const q = types.map(t => '&enrollment_type[]=' + t).join('') + (search ? '&search_term=' + encodeURIComponent(search) : '');
+        const list = await canvas.getAll(`/api/v1/courses/${course_id}/users?per_page=100&include[]=enrollments&include[]=email${q}`, 300);
+        const ROLE = { TeacherEnrollment: 'teacher', TaEnrollment: 'TA', StudentEnrollment: 'student', DesignerEnrollment: 'designer', ObserverEnrollment: 'observer' };
+        return list.map(u => ({
+          name: u.name, pronouns: u.pronouns || undefined, email: u.email || undefined,
+          roles: [...new Set((u.enrollments || []).map(e => e.role && !ROLE[e.role] ? e.role : ROLE[e.type] || e.type))]
+        }));
+      }
+    },
+    {
+      name: 'list_inbox',
+      description: "Saif's Canvas Inbox: recent conversations with the subject, who is in them, the course, the last message, and whether it is unread. Read one with get_conversation.",
+      inputSchema: obj({
+        scope: { type: 'string', enum: ['inbox', 'unread', 'sent', 'starred', 'archived'], description: 'Default inbox' },
+        course_id: { ...id, description: 'Optional: only this course' }
+      }),
+      run: async ({ scope = 'inbox', course_id }) => {
+        const list = await canvas.getAll(`/api/v1/conversations?per_page=50&scope=${encodeURIComponent(scope)}` +
+          (course_id ? '&filter[]=course_' + course_id : ''), 50);
+        return list.map(c => ({
+          id: c.id, subject: c.subject || '(no subject)', course: c.context_name,
+          with: (c.participants || []).map(p => p.name).join(', '),
+          unread: c.workflow_state === 'unread', messages: c.message_count,
+          last_at: c.last_message_at, last_message: clip(c.last_message || '', 300)
+        }));
+      }
+    },
+    {
+      name: 'get_conversation',
+      description: 'Read one Canvas Inbox conversation in full, oldest message first. Does not mark it read. Attachments come with file ids for get_file.',
+      inputSchema: obj({ conversation_id: id }, ['conversation_id']),
+      run: async ({ conversation_id }) => {
+        const c = await canvas.get(`/api/v1/conversations/${conversation_id}?auto_mark_as_read=false`);
+        const who = new Map((c.participants || []).map(p => [p.id, p.name]));
+        return {
+          subject: c.subject, course: c.context_name,
+          messages: (c.messages || []).slice().reverse().map(m => ({
+            from: who.get(m.author_id) || 'Someone', at: m.created_at, text: clip(m.body || '', 6000),
+            attachments: (m.attachments || []).map(a => ({ file_id: a.id, name: a.display_name })),
+            media_comment: m.media_comment ? true : undefined
+          }))
+        };
       }
     },
     {

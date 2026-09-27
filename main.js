@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { createCanvas, NeedsLogin } = require('./canvas');
 const { createTools } = require('./tools');
+const { createBrowser } = require('./browse');
+const { createEd } = require('./ed');
 const { startMcp } = require('./mcp');
 const { findClaude, runTurn } = require('./claude');
 
@@ -257,7 +259,10 @@ const tools = createTools({
   workDir: workDir(),
   onProposal: card => sendUI('chat:event', { type: 'proposal', card })
 });
-for (const t of tools.tools) { const run = t.run; t.run = args => withLogin(() => run(args)); }
+const browser = createBrowser({ partition: PARTITION, getSession: canvasSession, getBase: () => readCfg().base, canvas, NeedsLogin });
+const ed = createEd({ canvas, browser, getSession: canvasSession });
+const allTools = [...tools.tools, ...browser.tools, ...ed.tools];
+for (const t of allTools) { const run = t.run; t.run = args => withLogin(() => run(args)); }
 
 let mcpConfigPath = null;
 let mcpUrl = null;
@@ -271,6 +276,8 @@ function systemPrompt() {
 - Look things up with the canvas tools instead of guessing. Canvas ids are numbers; get them from tool results, never invent them. When he mentions an assignment by name, find it (upcoming, or list_courses then list_assignments) before answering.
 - Canvas times are UTC. Saif is in ${tz}. Give times in his local time with the weekday, and how far away they are ("Thu 11:59 PM, in 2 days").
 - Instructions often sit in linked files or module pages. When get_assignment lists linked_file_ids, open the relevant ones with get_file and then Read.
+- Every tab of a course is open to you. list_tabs shows a course's menu and which tool reads each tab: list_files, list_discussions/get_discussion (Canvas discussions), get_grades, list_pages, list_quizzes, list_people, and the Inbox (list_inbox). Ed Discussion is a separate site behind a course's Ed tab: use ed_threads to browse or search it and ed_thread to read a thread with its answers. Anything without its own tool (Gradescope, Panopto, a custom home page, a module's external tool) opens with open_tab or open_canvas_page, which load the real page and read it.
+- All of these only read. Never post, reply or message on Saif's behalf.
 - Files Saif attaches are saved in ./uploads (see list_attached_files). Files you download from Canvas go to ./downloads. Read either with the Read tool.
 - Handing in: only when Saif asks you to submit or turn something in, call propose_submission. It does NOT submit. It shows him a confirmation card, and nothing reaches Canvas until he clicks Submit. Match the assignment by course, name, and due date. If more than one could fit, ask which one instead of picking. If the file type isn't accepted, say so rather than proposing.
 - Messages starting with "(Portal note:" come from the app, not from Saif. They report what happened to a confirmation card.
@@ -281,7 +288,7 @@ function systemPrompt() {
 async function bootMcp() {
   let { mcpToken } = readCfg();
   if (!mcpToken) writeCfg({ mcpToken: (mcpToken = require('crypto').randomBytes(18).toString('hex')) });
-  const srv = await startMcp(tools.tools, { token: mcpToken, ports: [7345, 7346, 7347] });
+  const srv = await startMcp(allTools, { token: mcpToken, ports: [7345, 7346, 7347] });
   mcpUrl = srv.url;
   fs.mkdirSync(workDir(), { recursive: true });
   mcpConfigPath = path.join(userData(), 'mcp.json');

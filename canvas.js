@@ -18,6 +18,13 @@ class NeedsLogin extends Error {
   }
 }
 
+class NotAllowed extends Error {
+  constructor() {
+    super("Canvas doesn't let Saif see that. The course probably has this tab turned off for students; try list_modules, or open_tab to see what the course does show.");
+    this.code = 'forbidden';
+  }
+}
+
 function createCanvas({ getBase, getSession }) {
   const base = () => {
     const b = getBase();
@@ -53,7 +60,14 @@ function createCanvas({ getBase, getSession }) {
       redirect: follow ? 'follow' : 'manual',
       signal: AbortSignal.timeout(60000)
     });
-    if (res.status === 401) throw new NeedsLogin();
+    /* 401 means two things in Canvas: no session, or a signed-in student
+       asking for something the course hides (a Files tab switched off, say).
+       Only the first is worth signing in again for. */
+    if (res.status === 401) {
+      const said = await res.text().catch(() => '');
+      if (/"unauthorized"|not authorized/i.test(said)) throw new NotAllowed();
+      throw new NeedsLogin();
+    }
     return res;
   }
 
@@ -75,10 +89,26 @@ function createCanvas({ getBase, getSession }) {
     return new Error('Canvas said ' + res.status + (msg ? ': ' + msg : ''));
   }
 
+  /* Signed out, Canvas answers a private course's URLs 404 rather than 401
+     (it won't admit the course exists), so a 404 is only believed once
+     /users/self says the session is still there. */
+  async function signedIn() {
+    try {
+      const res = await request('/api/v1/users/self');
+      return !bounced(res) && res.ok && /json/i.test(res.headers.get('content-type') || '');
+    } catch (e) { return false; }
+  }
+
+  async function check(res) {
+    if (bounced(res)) throw new NeedsLogin();
+    if (res.ok) return;
+    if (res.status === 404 && !(await signedIn())) throw new NeedsLogin();
+    throw await failure(res);
+  }
+
   async function get(path) {
     const res = await request(path);
-    if (bounced(res)) throw new NeedsLogin();
-    if (!res.ok) throw await failure(res);
+    await check(res);
     return readJson(res);
   }
 
@@ -87,8 +117,7 @@ function createCanvas({ getBase, getSession }) {
     let url = path, out = [];
     while (url && out.length < cap) {
       const res = await request(url);
-      if (bounced(res)) throw new NeedsLogin();
-      if (!res.ok) throw await failure(res);
+      await check(res);
       const page = await readJson(res);
       out = out.concat(Array.isArray(page) ? page : []);
       const link = res.headers.get('link') || '';
@@ -100,8 +129,7 @@ function createCanvas({ getBase, getSession }) {
 
   async function send(path, method, pairs) {
     const res = await request(path, { method, form: pairs });
-    if (bounced(res)) throw new NeedsLogin();
-    if (!res.ok) throw await failure(res);
+    await check(res);
     return readJson(res);
   }
 
@@ -164,4 +192,4 @@ function createCanvas({ getBase, getSession }) {
   return { get, getAll, send, download, submitFiles, base };
 }
 
-module.exports = { createCanvas, NeedsLogin };
+module.exports = { createCanvas, NeedsLogin, NotAllowed };

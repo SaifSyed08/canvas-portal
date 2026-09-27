@@ -439,13 +439,29 @@ const TOOL_LABELS = {
   get_page: 'Read a course page',
   list_announcements: 'Checked announcements',
   list_attached_files: 'Checked your attached files',
-  propose_submission: 'Set up a hand-in'
+  propose_submission: 'Set up a hand-in',
+  mark_done: 'Ticked it on your planner',
+  list_tabs: "Looked at the course's tabs",
+  list_discussions: 'Looked through the discussions',
+  get_discussion: 'Read a discussion',
+  list_files: 'Looked through the course files',
+  list_pages: 'Looked through the pages',
+  get_grades: 'Checked your grades',
+  list_quizzes: 'Looked at the quizzes',
+  list_people: 'Looked at the people in the course',
+  list_inbox: 'Checked your Canvas inbox',
+  get_conversation: 'Read an inbox message',
+  open_tab: 'Opened a course tab',
+  open_canvas_page: 'Opened a Canvas page',
+  ed_threads: 'Looked through Ed Discussion',
+  ed_thread: 'Read an Ed thread'
 };
 function toolLabel(name, input) {
   if (name === 'Read') {
     const f = String((input && input.file_path) || '').split(/[\\/]/).pop();
     return f ? 'Read ' + f.replace(/^\d+-/, '').replace(/\.txt$/, '') : 'Read a file';
   }
+  if (/open_tab$/.test(name) && input && input.tab && !/^context_/.test(input.tab)) return 'Opened ' + input.tab;
   return TOOL_LABELS[name.replace(/^mcp__canvas__/, '')] || name.replace(/^mcp__canvas__/, '').replace(/_/g, ' ');
 }
 
